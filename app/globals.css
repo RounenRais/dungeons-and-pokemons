@@ -1,26 +1,334 @@
 @import "tailwindcss";
 
+/*
+ * Light "field journal" theme: aged paper, brown ink, and the Pokémon brand
+ * colours (Poké Ball red, logo blue, logo yellow) used as accents.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Paper and ink */
+  --paper: #f5ecd8;
+  --paper-2: #efe4ca;
+  --paper-3: #e3d6b6;
+  --ink: #4a3418;
+  --ink-soft: #6f5734;
+  --ink-line: #b99c6b;
+  --ink-faint: #8d7448;
+
+  /* Brand accents */
+  --poke-red: #d92b2b;
+  --poke-red-dark: #a81b1b;
+  --poke-blue: #3b4cca;
+  --poke-yellow: #e8a712;
+
+  /* Aliases used across the UI */
+  --poke-bg: var(--paper);
+  --poke-panel: var(--paper-2);
+  --poke-panel-2: var(--paper-3);
+  --poke-line: var(--ink-line);
+  --poke-text: var(--ink);
+  --poke-muted: var(--ink-faint);
+  --poke-accent: var(--poke-red);
+
+  --background: var(--paper);
+  --foreground: var(--ink);
+
+  /* FRLG battle UI palette (sampled from the sprite pack). */
+  --gba-outline: #283030;
+  --gba-gold: #c8a848;
+  --gba-navy: #285068;
+  --gba-lavender: #706880;
+  --gba-cream: #f8f8d8;
+  --gba-ink: #404040;
+  --gba-hp-green: #58e058;
+  --gba-hp-yellow: #f8c000;
+  --gba-hp-red: #f04040;
+  --gba-hp-empty: #684850;
+  --gba-exp: #48a8f8;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-hand: var(--font-hand);
+  --font-pixel: var(--font-pixel);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  /* Keep the page from shifting when a scrollbar appears. */
+  scrollbar-gutter: stable;
+  overflow-x: hidden;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background:
+    radial-gradient(
+      ellipse 80% 55% at 50% -10%,
+      rgba(217, 43, 43, 0.09) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 70% 50% at 90% 110%,
+      rgba(59, 76, 202, 0.08) 0%,
+      transparent 60%
+    ),
+    var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body), system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+/* Titles, section headings and anything shouting a name. */
+h1,
+h2,
+h3,
+.font-display {
+  font-family: var(--font-display), Georgia, serif;
+  letter-spacing: 0.015em;
+}
+
+/* Anything meant to look written by hand on the map or in the journal. */
+.font-hand {
+  font-family: var(--font-hand), 'Segoe Script', cursive;
+}
+
+.overflow-x-auto::-webkit-scrollbar,
+.overflow-y-auto::-webkit-scrollbar,
+.overflow-auto::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+.overflow-x-auto::-webkit-scrollbar-thumb,
+.overflow-y-auto::-webkit-scrollbar-thumb,
+.overflow-auto::-webkit-scrollbar-thumb {
+  background: var(--ink-line);
+  border-radius: 999px;
+}
+
+/* --- Parchment surfaces --------------------------------------------------- */
+
+.parchment {
+  background-image: url("/sprites/ui/parchment.jpg");
+  background-size: 640px;
+  background-repeat: repeat;
+  color: var(--ink);
+  border: 2px solid var(--ink-line);
+  box-shadow:
+    inset 0 0 60px rgba(120, 88, 44, 0.25),
+    0 2px 10px rgba(74, 52, 24, 0.18);
+}
+
+/* A lighter card that still reads as paper. */
+.paper-panel {
+  background: color-mix(in srgb, var(--paper-2) 88%, white);
+  border: 1px solid var(--ink-line);
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(74, 52, 24, 0.12);
+}
+
+/* --- Map nodes ------------------------------------------------------------ */
+
+.map-node {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 2px solid var(--ink-line);
+  background: color-mix(in srgb, var(--paper) 85%, transparent);
+  color: var(--ink-soft);
+  cursor: default;
+  opacity: 0.55;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    opacity 0.15s;
+}
+
+.map-node-open {
+  cursor: pointer;
+  opacity: 1;
+  border-color: var(--ink);
+  border-width: 3px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--paper) 96%, white);
+  box-shadow:
+    0 0 0 4px rgba(217, 43, 43, 0.13),
+    0 2px 6px rgba(74, 52, 24, 0.28);
+}
+
+.map-node-open:hover {
+  background: #fff8e6;
+  box-shadow:
+    0 0 0 6px rgba(217, 43, 43, 0.2),
+    0 3px 8px rgba(74, 52, 24, 0.34);
+}
+
+.map-node-past {
+  opacity: 0.25;
+}
+
+/* --- Move effect sprite strips -------------------------------------------- */
+
+/*
+ * Plays a horizontal strip frame by frame: the background is as wide as the
+ * frame count and `steps()` snaps between whole frames (no tweening).
+ */
+@keyframes fx-play {
+  to {
+    background-position-x: calc(var(--fx-w) * var(--fx-frames) * -1);
+  }
+}
+
+.fx-sprite {
+  width: var(--fx-w);
+  height: var(--fx-h);
+  background-repeat: no-repeat;
+  background-position: 0 0;
+  background-size: calc(var(--fx-w) * var(--fx-frames)) var(--fx-h);
+  image-rendering: pixelated;
+  animation: fx-play var(--fx-duration) steps(var(--fx-frames))
+    var(--fx-iterations) both;
+}
+
+/* --- GBA battle boxes ----------------------------------------------------- */
+
+.gba-text {
+  font-family: var(--font-pixel), ui-monospace, monospace;
+  letter-spacing: 0.02em;
+  line-height: 1.7;
+}
+
+/* Message box: navy fill, gold frame, dark outline. */
+.gba-message-box {
+  background: var(--gba-navy);
+  border: 3px solid var(--gba-gold);
+  outline: 3px solid var(--gba-outline);
+  color: #f8f8f8;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.35);
+}
+
+/* Command menu: white fill, lavender inner frame, dark outline. */
+.gba-command-box {
+  background: #f8f8f8;
+  border: 3px solid var(--gba-lavender);
+  outline: 3px solid var(--gba-outline);
+  color: var(--gba-ink);
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.35);
+}
+
+/* Status panel: cream fill, dark outline, offset shadow. */
+.gba-status-box {
+  background: var(--gba-cream);
+  border: 2px solid var(--gba-outline);
+  border-radius: 6px;
+  color: var(--gba-ink);
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.35);
+}
+
+.gba-hp-track {
+  background: var(--gba-hp-empty);
+  border: 2px solid var(--gba-outline);
+  border-radius: 999px;
+}
+
+/* --- Field-journal panels -------------------------------------------------- */
+
+/*
+ * Headings on the map screen are set in small-caps with wide tracking, the way
+ * labels are lettered on an old survey map.
+ */
+.ink-heading {
+  font-family: var(--font-display), Georgia, serif;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* A small parchment card with a printed double rule inside its border. */
+.parchment-card {
+  position: relative;
+  background-image: url("/sprites/ui/parchment.jpg");
+  background-size: 420px;
+  background-repeat: repeat;
+  color: var(--ink);
+  border: 2px solid var(--ink-line);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 0 30px rgba(120, 88, 44, 0.22),
+    0 1px 5px rgba(74, 52, 24, 0.16);
+}
+
+.parchment-card::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 1px solid rgba(140, 110, 66, 0.45);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* Hairline divider that fades out at both ends, like a pen stroke. */
+.ink-rule {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--ink-line) 12%,
+    var(--ink-line) 88%,
+    transparent
+  );
+  opacity: 0.7;
+}
+
+/* A route choice, drawn as a slip of paper pinned under the heading. */
+.route-slip {
+  background: color-mix(in srgb, var(--paper) 70%, transparent);
+  border: 1px solid var(--ink-line);
+  border-radius: 3px;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
+}
+
+.route-slip:hover {
+  background: color-mix(in srgb, #fff8e6 80%, transparent);
+  border-color: var(--ink);
+}
+
+/* --- Relic medallions ------------------------------------------------------ */
+
+.relic-slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: radial-gradient(circle at 32% 28%, #fff8e6, var(--paper-3) 78%);
+  border: 2px solid var(--ink-line);
+  box-shadow:
+    inset 0 -2px 4px rgba(120, 88, 44, 0.3),
+    0 1px 3px rgba(74, 52, 24, 0.3);
+  transition:
+    transform 0.12s,
+    box-shadow 0.12s;
+}
+
+.relic-slot:hover,
+.relic-slot[data-active="true"] {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 -2px 4px rgba(120, 88, 44, 0.3),
+    0 3px 7px rgba(74, 52, 24, 0.38);
+}
+
+/* An empty loop of cord where a relic has not been hung yet. */
+.relic-slot-empty {
+  background: none;
+  border-style: dashed;
+  border-color: rgba(140, 110, 66, 0.45);
+  box-shadow: none;
 }
