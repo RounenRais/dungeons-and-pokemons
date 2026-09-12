@@ -89,6 +89,7 @@ ICONS: dict[str, str] = {
     "present": "delapouite/present",
     "upgrade": "delapouite/upgrade",
     "star": "delapouite/round-star",
+    "coffee": "lorc/coffee-mug",
 }
 
 HEADER = '''\
