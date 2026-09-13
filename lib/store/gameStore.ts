@@ -76,14 +76,16 @@ function createEmptyRecords(): RunRecords {
  * Dükkanlardan yenisini almak bu yüzden gerçek bir karar.
  */
 export const STARTING_REVIVES = 1;
-
+export const STARTING_POKE_BALLS = 3;
 function createEmptyPlayer(): Player {
   return {
     team: [],
     activeIndex: 0,
     gold: 100,
     position: 0,
-    inventory: [{ itemId: "revive", quantity: STARTING_REVIVES }],
+    inventory: [{ itemId: "revive", quantity: STARTING_REVIVES },
+       { itemId: "poke-ball", quantity: STARTING_POKE_BALLS },
+    ],
   };
 }
 
