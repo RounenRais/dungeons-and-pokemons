@@ -46,8 +46,26 @@ const SAVE_KEY = "pokerun:save";
  * to the bag, v5 spread the routes across the whole sheet and put quotas on
  * shops/rests, v6 gives every run a starting Revive and ends the run when you
  * lose without one — an old save has no Revive and would end on its next loss.
+ *
+ * Not: dinlenme kontrol noktası (`lastRestNodeId`) ve `deepestDepth` sürüm
+ * gerektirmedi; eski kayıtta bu alanlar yok, zustand başlangıç değerlerini
+ * (null / 0) bırakıyor ve ilk yenilgi seni act'in başına gönderiyor. Sürümü
+ * artırmak devam eden koşuları boşuna silerdi.
  */
 export const SAVE_VERSION = 6;
+
+/**
+ * Yenilginin sonucu. Çağıran taraf (sayfa) buna bakarak doğru günlük
+ * satırını yazıyor; store'un kendisi metin üretmiyor.
+ */
+export interface DefeatOutcome {
+  /** Revive kalmadı: koşu bitti. */
+  runEnded: boolean;
+  /** Nereye dönüldüğü — dinlenme durağı, act'in başı ya da hiçbiri. */
+  returnedTo: "rest" | "start" | "none";
+  /** Dönülen dinlenme durağının id'si; başa dönüldüyse null. */
+  nodeId: string | null;
+}
 
 /** Koşular arası kalan rekorlar. */
 export interface RunRecords {
@@ -96,8 +114,19 @@ interface GameState {
   map: GameMap | null;
   /** Which node the player is standing on; null before the first move. */
   currentNodeId: string | null;
+  /**
+   * Bu act'te en son uğranılan REST düğümü — yenilgi kontrol noktası.
+   * Henüz bir dinlenme durağına uğramadıysan null; o zaman yenilgi seni
+   * act'in en başına gönderir.
+   */
+  lastRestNodeId: string | null;
   /** Act number, starting at 0. Beating a boss opens the next act. */
   act: number;
+  /**
+   * Bu koşuda ulaşılan en büyük derinlik. `player.position` yenilgide geri
+   * gidiyor (kontrol noktasına dönüş), rekor ise geri gitmemeli.
+   */
+  deepestDepth: number;
   player: Player;
   /** Fetch edilmiş tür verileri (sprite/stat için) — pokemonId → Pokemon. */
   pokedex: Record<number, Pokemon>;
@@ -143,10 +172,11 @@ interface GameState {
   beginBattle: (battle: BattleState) => void;
   endBattle: () => void;
   /**
-   * Yenilgi. Revive varsa harcanır (yarım altın + yarım can bedeliyle),
-   * yoksa koşu biter ve faz 'gameover' olur.
+   * Yenilgi. Revive varsa harcanır (yarım altın + yarım can bedeliyle) ve
+   * oyuncu bu act'te uğradığı son dinlenme durağına geri döner — hiç
+   * uğramadıysa act'in başına. Revive yoksa koşu biter, faz 'gameover' olur.
    */
-  applyDefeat: () => void;
+  applyDefeat: () => DefeatOutcome;
   offerRelics: (count?: number) => void;
   clearRelicOffer: () => void;
   addRelic: (id: RelicId) => void;
@@ -167,7 +197,9 @@ export const useGameStore = create<GameState>()(
       seed: 0,
       map: null,
       currentNodeId: null,
+      lastRestNodeId: null,
       act: 0,
+      deepestDepth: 0,
       player: createEmptyPlayer(),
       pokedex: {},
       isMoving: false,
@@ -188,7 +220,9 @@ export const useGameStore = create<GameState>()(
           seed: 0,
           map: null,
           currentNodeId: null,
+          lastRestNodeId: null,
           act: 0,
+          deepestDepth: 0,
           player: createEmptyPlayer(),
           pokedex: {},
           isMoving: false,
@@ -208,7 +242,9 @@ export const useGameStore = create<GameState>()(
           seed,
           map: generateMap(seed, 0),
           currentNodeId: null,
+          lastRestNodeId: null,
           act: 0,
+          deepestDepth: 0,
           relics: [],
           winStreak: 0,
           bossesDefeated: 0,
@@ -244,12 +280,17 @@ export const useGameStore = create<GameState>()(
           const node = state.map.nodes[nodeId];
           if (node === undefined) return state;
 
+          const depth = getDepth(state.act, node.row);
           return {
             currentNodeId: nodeId,
+            deepestDepth: Math.max(state.deepestDepth, depth),
+            // Dinlenme durağı aynı zamanda kontrol noktası: yenilince buraya dönüşülür.
+            lastRestNodeId:
+              node.type === "REST" ? nodeId : state.lastRestNodeId,
             // `position` is the run depth: it drives enemy scaling and records.
             player: {
               ...state.player,
-              position: getDepth(state.act, node.row),
+              position: depth,
             },
           };
         }),
@@ -261,6 +302,9 @@ export const useGameStore = create<GameState>()(
             act,
             map: generateMap(state.seed, act),
             currentNodeId: null,
+            // Yeni act, yeni harita: eski kontrol noktası artık geçersiz.
+            lastRestNodeId: null,
+            deepestDepth: Math.max(state.deepestDepth, getDepth(act, 0)),
             player: { ...state.player, position: getDepth(act, 0) },
           };
         }),
@@ -375,15 +419,28 @@ export const useGameStore = create<GameState>()(
         // Revive yoksa koşu biter; rekorlar korunur.
         if (revives <= 0) {
           set({ battle: null, phase: "gameover", winStreak: 0 });
-          return;
+          return { runEnded: true, returnedTo: "none", nodeId: null };
         }
+
+        // Kontrol noktası: bu act'te uğradığın son dinlenme durağı. Kayıtlı
+        // düğüm bu haritada yoksa (eski kayıt / act değişmiş) başa dönülür.
+        const restNode =
+          state.lastRestNodeId !== null
+            ? (state.map?.nodes[state.lastRestNodeId] ?? null)
+            : null;
+        // Başa dönüş = alt sıranın tamamı yeniden seçilebilir (currentNodeId null).
+        const returnedTo: DefeatOutcome["returnedTo"] =
+          restNode !== null ? "rest" : "start";
 
         set({
           battle: null,
           phase: "board",
           winStreak: 0,
+          currentNodeId: restNode !== null ? restNode.id : null,
+          lastRestNodeId: restNode !== null ? restNode.id : null,
           player: {
             ...state.player,
+            position: getDepth(state.act, restNode?.row ?? 0),
             // Bir Revive harca; yarım altın ve yarım can bedelini de öde.
             inventory: state.player.inventory
               .map((entry) =>
@@ -404,6 +461,12 @@ export const useGameStore = create<GameState>()(
             })),
           },
         });
+
+        return {
+          runEnded: false,
+          returnedTo,
+          nodeId: restNode !== null ? restNode.id : null,
+        };
       },
 
       /** Kaç Revive kaldığı — yenilgi ekranı ve HUD için. */
@@ -465,7 +528,9 @@ export const useGameStore = create<GameState>()(
               ...state.records,
               bestDistance: Math.max(
                 state.records.bestDistance,
-                state.player.position,
+                // Yenilgide geri dönüldüğü için anın konumu değil, koşunun
+                // ulaştığı en uzak nokta yazılır.
+                Math.max(state.deepestDepth, state.player.position),
               ),
               bestLevel: Math.max(state.records.bestLevel, bestMemberLevel),
               totalRuns: state.records.totalRuns + 1,
@@ -494,7 +559,9 @@ export const useGameStore = create<GameState>()(
         seed: state.seed,
         map: state.map,
         currentNodeId: state.currentNodeId,
+        lastRestNodeId: state.lastRestNodeId,
         act: state.act,
+        deepestDepth: state.deepestDepth,
         player: state.player,
         pokedex: state.pokedex,
         battle: state.battle,

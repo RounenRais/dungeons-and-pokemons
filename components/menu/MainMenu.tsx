@@ -8,6 +8,7 @@
 
 import { motion } from "framer-motion";
 import { GameIcon } from "@/components/icons/GameIcons";
+import { DiscordIcon } from "@/components/icons/DiscordIcon";
 import { getStarterSpriteUrl, STARTERS } from "@/lib/data/starters";
 import { RecordsPanel } from "@/components/RecordsPanel";
 import type { RunRecords } from "@/lib/store/gameStore";
@@ -23,6 +24,9 @@ const CAMEO_IDS = [4, 1, 7, 25];
 
 /** Destek bağlantısı. */
 const SUPPORT_URL = "https://www.patreon.com/c/rounenrais/membership";
+
+/** Topluluk sunucusu. */
+const DISCORD_URL = "https://discord.gg/e3ey2GxD9";
 
 export function MainMenu({ records, onPlay, onHowToPlay }: MainMenuProps) {
   return (
@@ -85,6 +89,17 @@ export function MainMenu({ records, onPlay, onHowToPlay }: MainMenuProps) {
           >
             <GameIcon name="coffee" className="h-4 w-4" />
             Buy me a coffee
+          </a>
+
+          {/* Discord davetiyesi — destek bağlantısıyla aynı sessiz ton. */}
+          <a
+            href={DISCORD_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-[var(--ink-line)] px-6 py-2.5 text-sm font-semibold text-[var(--ink-soft)] transition hover:bg-[#5865F2]/10 hover:text-[#4752c4]"
+          >
+            <DiscordIcon className="h-4 w-4" />
+            Join Server
           </a>
         </div>
       </motion.div>

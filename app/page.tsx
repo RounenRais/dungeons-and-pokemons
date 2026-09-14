@@ -29,6 +29,7 @@ export default function GamePage() {
   const winStreak = useGameStore((state) => state.winStreak);
   const records = useGameStore((state) => state.records);
   const bossesDefeated = useGameStore((state) => state.bossesDefeated);
+  const deepestDepth = useGameStore((state) => state.deepestDepth);
   const [loadError, setLoadError] = useState<string | null>(null);
   /**
    * Koşu dışı ekranlar. Kayıtlı bir koşu varsa sayfa doğrudan oyuna
@@ -95,16 +96,23 @@ export default function GamePage() {
       // Beating the boss opens the next act with a fresh map.
       if (wasBoss) store.advanceAct();
     } else {
-      // Revive varsa harcanır ve koşu sürer; yoksa applyDefeat fazı
-      // 'gameover' yapar ve RunOver ekranı devreye girer.
-      const hadRevive = store.countRevives() > 0;
-      store.addLog(
-        hadRevive
-          ? "You were defeated — a Revive was used, and half your coins are gone."
-          : "You were defeated with no Revive left. The run is over.",
-        "bad",
-      );
-      store.applyDefeat();
+      // Revive varsa harcanır, oyuncu son dinlenme durağına (yoksa act'in
+      // başına) döner ve koşu sürer; yoksa applyDefeat fazı 'gameover'
+      // yapar ve RunOver ekranı devreye girer.
+      const defeat = store.applyDefeat();
+      if (defeat.runEnded) {
+        store.addLog(
+          "You were defeated with no Revive left. The run is over.",
+          "bad",
+        );
+      } else {
+        store.addLog(
+          defeat.returnedTo === "rest"
+            ? "You blacked out — a Revive was used and you woke up back at the last rest stop, half your coins gone."
+            : "You blacked out — a Revive was used and you woke up back at the start of the act, half your coins gone.",
+          "bad",
+        );
+      }
     }
   }
 
@@ -154,7 +162,7 @@ export default function GamePage() {
     return (
       <main className="flex flex-1 flex-col">
         <RunOver
-          depth={player.position}
+          depth={Math.max(deepestDepth, player.position)}
           bestLevel={bestLevel}
           bossesDefeated={bossesDefeated}
           records={records}

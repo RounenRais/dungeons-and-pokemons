@@ -5,6 +5,7 @@
 
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useShallow } from "zustand/react/shallow";
 import { RouteMap } from "./RouteMap";
 import { RestSite, REST_HEAL_PERCENT } from "./RestSite";
 import { RelicDealer } from "./RelicDealer";
@@ -82,7 +83,9 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
   const pokemon = useGameStore((state) =>
     selectPokemonFor(state, selectActiveMember(state)),
   );
-  const reachable = useGameStore(selectReachableNodes);
+  // useShallow şart: seçici bir dizi döndürüyor. Referans her render'da
+  // değişirse zustand'ın useSyncExternalStore'u sonsuz döngüye giriyor.
+  const reachable = useGameStore(useShallow(selectReachableNodes));
 
   const [isLoadingBattle, setIsLoadingBattle] = useState(false);
   const [chestTier, setChestTier] = useState<Rarity | null>(null);

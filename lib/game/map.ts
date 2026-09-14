@@ -273,6 +273,18 @@ export function generateMap(seed: number, act: number): GameMap {
   return { act, seed, rows: MAP_ROWS, nodes, rowNodes };
 }
 
+/**
+ * Sonuç referansları sabit olmalı.
+ *
+ * Bu fonksiyon bir zustand selector'ının içinden çağrılıyor; her çağrıda yeni
+ * bir dizi döndürmek useSyncExternalStore'u sonsuz render döngüsüne sokuyor
+ * ("Maximum update depth exceeded" — React #185). Çıkışı olan düğümlerde
+ * zaten var olan diziyi döndürüyoruz; diğer iki durum için de referansı
+ * sabitliyoruz.
+ */
+const NO_REACHABLE_NODES: string[] = [];
+const selfOnlyCache = new WeakMap<MapNode, string[]>();
+
 /** Nodes you may move to right now. Before the first step: the whole bottom row. */
 export function getReachableNodes(
   map: GameMap,
@@ -281,13 +293,17 @@ export function getReachableNodes(
   if (currentNodeId === null) return map.rowNodes[0];
 
   const current = map.nodes[currentNodeId];
-  if (current === undefined) return [];
+  if (current === undefined) return NO_REACHABLE_NODES;
   if (current.next.length > 0) return current.next;
 
   // Çıkışı olmayan tek düğüm boss; oraya çıkıp kaybedince oyuncu kapana
   // kısılıyordu (kazanınca zaten yeni act'e geçiliyor). Çıkışı yoksa düğümün
   // kendisi tekrar seçilebilir olsun: boss'a yeniden meydan okunabilir.
-  return [currentNodeId];
+  const cached = selfOnlyCache.get(current);
+  if (cached !== undefined) return cached;
+  const selfOnly = [currentNodeId];
+  selfOnlyCache.set(current, selfOnly);
+  return selfOnly;
 }
 
 /** Bu düğümde takılıp kaldıysak tek seçenek onu tekrar denemek. */

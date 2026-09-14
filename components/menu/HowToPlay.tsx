@@ -135,10 +135,11 @@ export function HowToPlay({ onBack, backLabel = "Back" }: HowToPlayProps) {
 
         <Chapter number={9} title="One Revive" figure={<ReviveFigure />}>
           Every run starts with a single Revive. Lose a battle and it is spent
-          automatically — you get back up at half HP, minus half your coins.
-          Lose again with an empty bag and the run is over and you start from
-          the beginning. Buy spares. They are the only thing between a bad
-          match-up and the end.
+          automatically — you wake up at the last campfire you visited in this
+          act, at half HP and minus half your coins, and walk the stretch again.
+          Never stopped at a campfire? You go all the way back to the start of
+          the act. Lose with an empty bag and the run is over. Buy spares, and
+          treat every campfire as a checkpoint.
         </Chapter>
       </div>
 
