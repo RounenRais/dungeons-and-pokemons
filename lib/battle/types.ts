@@ -12,6 +12,8 @@ import type {
   StageKey,
   TeamMember,
 } from "@/lib/types";
+import type { FieldState, SideState } from "./field";
+import type { VolatileState } from "./volatile";
 
 export type Side = "player" | "enemy";
 
@@ -37,6 +39,8 @@ export interface Combatant {
   flinched: boolean;
   moves: Move[];
   pp: Record<number, number>;
+  /** Savaş içi geçici durumlar: Protect, Leech Seed, kilitlenen hamleler… */
+  volatile: VolatileState;
 }
 
 export type BattleOutcome = "ongoing" | "win" | "loss";
@@ -57,11 +61,27 @@ export interface BattleState {
   playerModifiers: BattleModifiers;
   /** Direniş Bandı bu savaşta kullanıldı mı? */
   enduranceUsed: boolean;
+  /** Hava, zemin ve Trick Room. */
+  field: FieldState;
+  /** Taraf başına ekranlar, Tailwind, Wish. */
+  sides: Record<Side, SideState>;
+  /**
+   * Düşman AI'ının ustalığı, 0 ile 1 arasında.
+   * 0 = vahşi bir Pokémon gibi rastgele, 1 = elinden gelenin en iyisi.
+   */
+  enemySkill: number;
 }
 
 /** Bir hamlenin engellenme sebebi. */
 export type BlockReason =
-  "paralysis" | "sleep" | "freeze" | "flinch" | "confusion" | "no-pp";
+  | "paralysis"
+  | "sleep"
+  | "freeze"
+  | "flinch"
+  | "confusion"
+  | "no-pp"
+  | "recharge"
+  | "infatuation";
 
 /**
  * Motorun ürettiği olaylar. UI bunları sırayla oynatır:
@@ -116,7 +136,25 @@ export type BattleEvent =
   | { kind: "must-switch" }
   | { kind: "blocked"; side: Side; reason: BlockReason }
   | { kind: "faint"; side: Side }
-  | { kind: "outcome"; result: Exclude<BattleOutcome, "ongoing"> };
+  | { kind: "outcome"; result: Exclude<BattleOutcome, "ongoing"> }
+  // --- Özel hareket efektleri ---
+  /** Leech Seed, tuzak, hava, Substitute bedeli gibi hasarlar. */
+  | {
+      kind: "volatile-damage";
+      side: Side;
+      /** Ekranda görünecek kaynak adı ("Leech Seed", "Sandstorm"…). */
+      label: string;
+      amount: number;
+      newHp: number;
+    }
+  /** HP'nin doğrudan bir değere çekildiği durumlar (Pain Split, Perish Song). */
+  | { kind: "hp-set"; side: Side; newHp: number }
+  | { kind: "protect-up"; side: Side }
+  | { kind: "protected"; side: Side }
+  | { kind: "charging"; side: Side; move: Move; text: string }
+  | { kind: "substitute"; side: Side; action: "up" | "absorbed" | "broke" }
+  | { kind: "field"; text: string }
+  | { kind: "fail"; side: Side };
 
 export interface TurnResult {
   state: BattleState;

@@ -158,4 +158,6 @@ export const BLOCK_MESSAGES: Record<BlockReason, string> = {
   flinch: "flinched and could not move!",
   confusion: "is confused and hurt itself!",
   "no-pp": "has no moves left!",
+  recharge: "must recharge!",
+  infatuation: "is immobilised by love!",
 };

@@ -110,6 +110,35 @@ export function describeEvent(
     case "blocked":
       return `${nameOf(event.side, names)} ${BLOCK_MESSAGES[event.reason]}`;
 
+    case "volatile-damage":
+      return `${nameOf(event.side, names)} was hurt by ${event.label}!`;
+
+    case "hp-set":
+      return null;
+
+    case "protect-up":
+      return `${nameOf(event.side, names)} protected itself!`;
+
+    case "protected":
+      return `${nameOf(event.side, names)} protected itself!`;
+
+    case "charging":
+      return `${nameOf(event.side, names)} ${event.text}`;
+
+    case "substitute":
+      if (event.action === "up") {
+        return `${nameOf(event.side, names)} put up a substitute!`;
+      }
+      return event.action === "broke"
+        ? `The substitute of ${nameOf(event.side, names)} broke!`
+        : "The substitute took the hit!";
+
+    case "field":
+      return event.text;
+
+    case "fail":
+      return "But it failed!";
+
     case "faint":
       return `${nameOf(event.side, names)} fainted!`;
 
@@ -142,7 +171,15 @@ export function getEventDelay(event: BattleEvent): number {
     case "status-damage":
     case "heal":
     case "recoil":
+    case "volatile-damage":
+    case "protect-up":
+    case "protected":
+    case "charging":
+    case "substitute":
+    case "field":
       return 700;
+    case "hp-set":
+      return 300;
     default:
       return 600;
   }

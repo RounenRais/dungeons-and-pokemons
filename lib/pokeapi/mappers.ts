@@ -1,6 +1,7 @@
 // Ham PokeAPI JSON'unu oyunun domain modellerine çevirir.
 // Buradaki her fonksiyon saf (pure) — fetch yok, state yok.
 
+import { isBannedMove } from "@/lib/data/moveBans";
 import { toPokemonType } from "@/lib/data/typeChart";
 import type {
   BaseStats,
@@ -118,6 +119,11 @@ function toLearnMethod(name: string): LearnMethod {
  * Aynı hareket birden fazla nesilde farklı level'da öğrenilebiliyor;
  * PokeAPI listeyi kabaca eskiden yeniye sıraladığı için her (hareket, yöntem)
  * çifti içinde **son** kaydı (en güncel nesli) alıyoruz.
+ *
+ * Oyunda karşılığı olmayan hareketler (çiftli maç hareketleri, eşya/yetenek
+ * çalanlar, tuzaklar) burada eleniyor — learnset tek geçiş noktası olduğu için
+ * başlangıç seti, ödül havuzu ve dükkandaki TM listesi kendiliğinden temiz
+ * kalıyor.
  */
 function mapLearnset(rawMoves: RawPokemonMove[]): LearnsetEntry[] {
   const entries = new Map<string, LearnsetEntry>();
@@ -125,6 +131,7 @@ function mapLearnset(rawMoves: RawPokemonMove[]): LearnsetEntry[] {
   for (const rawMove of rawMoves) {
     const moveId = extractIdFromUrl(rawMove.move.url);
     if (moveId === null) continue;
+    if (isBannedMove(rawMove.move.name)) continue;
 
     for (const detail of rawMove.version_group_details) {
       const method = toLearnMethod(detail.move_learn_method.name);

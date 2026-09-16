@@ -2,13 +2,25 @@
 //
 // damage = ((2*level/5 + 2) * power * (atk/def) / 50 + 2)
 //        * STAB * typeEffectiveness * random(0.85–1.0) * crit
+//
+// Üstüne savaş alanı çarpanları biniyor: hava, zemin ve ekranlar (Reflect /
+// Light Screen / Aurora Veil).
 
 import { getStab, getTypeEffectiveness } from "@/lib/data/typeChart";
 import type { RandomFn } from "@/lib/game/rng";
+import {
+  getTerrainDamageMultiplier,
+  getWeatherAccuracyOverride,
+  getWeatherDamageMultiplier,
+  getWeatherDefenseMultiplier,
+  type SideState,
+  type TerrainKind,
+  type WeatherKind,
+} from "./field";
 import { getAccuracyStageMultiplier, getStageMultiplier } from "./stages";
 import type { Combatant } from "./types";
 import type { BattleModifiers } from "@/lib/game/modifiers";
-import type { Move } from "@/lib/types";
+import type { Move, PokemonType } from "@/lib/types";
 
 /** Kritik vuruş çarpanı (Gen 6+). */
 export const CRIT_MULTIPLIER = 1.5;
@@ -25,8 +37,11 @@ export interface DamageResult {
   isCrit: boolean;
 }
 
-function getCritChance(move: Move): number {
-  const stage = Math.max(0, Math.min(3, move.meta.critRate));
+function getCritChance(move: Move, focusEnergy: boolean): number {
+  const stage = Math.max(
+    0,
+    Math.min(3, move.meta.critRate + (focusEnergy ? 2 : 0)),
+  );
   return CRIT_CHANCE_BY_STAGE[stage];
 }
 
@@ -34,8 +49,9 @@ export function rollCrit(
   move: Move,
   random: RandomFn,
   critMultiplier = 1,
+  focusEnergy = false,
 ): boolean {
-  return random() < Math.min(1, getCritChance(move) * critMultiplier);
+  return random() < Math.min(1, getCritChance(move, focusEnergy) * critMultiplier);
 }
 
 /**
@@ -66,6 +82,7 @@ function getEffectiveDefense(
   defender: Combatant,
   move: Move,
   isCrit: boolean,
+  weather: WeatherKind | null,
 ): number {
   const isPhysical = move.category === "physical";
   const base = isPhysical
@@ -76,7 +93,47 @@ function getEffectiveDefense(
     : defender.stages.specialDefense;
   const usedStage = isCrit ? Math.min(0, stage) : stage;
 
-  return base * getStageMultiplier(usedStage);
+  return (
+    base *
+    getStageMultiplier(usedStage) *
+    getWeatherDefenseMultiplier(weather, defender.pokemon.types, isPhysical)
+  );
+}
+
+/** Reflect / Light Screen / Aurora Veil gelen hasarı yarıya indirir. */
+function getScreenMultiplier(
+  screens: SideState | undefined,
+  move: Move,
+  isCrit: boolean,
+): number {
+  if (screens === undefined || isCrit) return 1;
+  if (screens.auroraVeil > 0) return 0.5;
+  if (move.category === "physical" && screens.reflect > 0) return 0.5;
+  if (move.category === "special" && screens.lightScreen > 0) return 0.5;
+  return 1;
+}
+
+export interface DamageOptions {
+  isCrit?: boolean;
+  randomFactor?: number;
+  /** Saldıranın relik değiştiricileri (varsa). */
+  attackerModifiers?: BattleModifiers;
+  /** Savunanın relik değiştiricileri (varsa). */
+  defenderModifiers?: BattleModifiers;
+  /** moveTraits'ten gelen hesaplanmış güç. */
+  powerOverride?: number | null;
+  /** Weather Ball gibi tip değiştiren hareketler için. */
+  typeOverride?: PokemonType;
+  weather?: WeatherKind | null;
+  terrain?: TerrainKind | null;
+  attackerGrounded?: boolean;
+  defenderGrounded?: boolean;
+  /** Savunan tarafın ekranları. */
+  screens?: SideState;
+  /** Lucky Chant: kritik vuruş gelmez. */
+  critBlocked?: boolean;
+  /** Focus Energy: kritik aşaması +2. */
+  focusEnergy?: boolean;
 }
 
 export function calculateDamage(
@@ -84,27 +141,33 @@ export function calculateDamage(
   defender: Combatant,
   move: Move,
   random: RandomFn,
-  options: {
-    isCrit?: boolean;
-    randomFactor?: number;
-    /** Saldıranın relik değiştiricileri (varsa). */
-    attackerModifiers?: BattleModifiers;
-    /** Savunanın relik değiştiricileri (varsa). */
-    defenderModifiers?: BattleModifiers;
-  } = {},
+  options: DamageOptions = {},
 ): DamageResult {
-  const effectiveness = getTypeEffectiveness(move.type, defender.pokemon.types);
+  const moveType = options.typeOverride ?? move.type;
+  const effectiveness = getTypeEffectiveness(moveType, defender.pokemon.types);
   if (effectiveness === 0) {
     return { damage: 0, effectiveness: 0, isCrit: false };
   }
 
   const attackerMods = options.attackerModifiers;
+  const weather = options.weather ?? null;
   const isCrit =
-    options.isCrit ??
-    rollCrit(move, random, attackerMods?.critChanceMultiplier ?? 1);
-  const power = move.power ?? FALLBACK_POWER;
+    options.critBlocked === true
+      ? false
+      : (options.isCrit ??
+        rollCrit(
+          move,
+          random,
+          attackerMods?.critChanceMultiplier ?? 1,
+          options.focusEnergy ?? false,
+        ));
+
+  const power = options.powerOverride ?? move.power ?? FALLBACK_POWER;
   const attack = getEffectiveAttack(attacker, move, isCrit);
-  const defense = Math.max(1, getEffectiveDefense(defender, move, isCrit));
+  const defense = Math.max(
+    1,
+    getEffectiveDefense(defender, move, isCrit, weather),
+  );
 
   const base =
     (((2 * attacker.level) / 5 + 2) * power * (attack / defense)) / 50 + 2;
@@ -119,18 +182,29 @@ export function calculateDamage(
     } else if (move.category === "special") {
       relicMultiplier *= attackerMods.specialDamageMultiplier;
     }
-    relicMultiplier *= attackerMods.typeDamageMultipliers[move.type] ?? 1;
+    relicMultiplier *= attackerMods.typeDamageMultipliers[moveType] ?? 1;
   }
   if (options.defenderModifiers !== undefined) {
     relicMultiplier *= options.defenderModifiers.damageTakenMultiplier;
   }
 
+  const fieldMultiplier =
+    getWeatherDamageMultiplier(weather, moveType) *
+    getTerrainDamageMultiplier(
+      options.terrain ?? null,
+      moveType,
+      options.attackerGrounded ?? true,
+      options.defenderGrounded ?? true,
+    ) *
+    getScreenMultiplier(options.screens, move, isCrit);
+
   const total =
     base *
-    getStab(move.type, attacker.pokemon.types) *
+    getStab(moveType, attacker.pokemon.types) *
     effectiveness *
     randomFactor *
     relicMultiplier *
+    fieldMultiplier *
     (isCrit ? CRIT_MULTIPLIER : 1);
 
   // Etkili olan her vuruş en az 1 hasar verir.
@@ -142,8 +216,10 @@ export function estimateDamage(
   attacker: Combatant,
   defender: Combatant,
   move: Move,
+  options: DamageOptions = {},
 ): number {
   return calculateDamage(attacker, defender, move, () => 0.5, {
+    ...options,
     isCrit: false,
     randomFactor: 0.925,
   }).damage;
@@ -155,12 +231,17 @@ export function rollAccuracy(
   defender: Combatant,
   move: Move,
   random: RandomFn,
+  options: { weather?: WeatherKind | null } = {},
 ): boolean {
-  if (move.accuracy === null) return true;
+  const weatherAccuracy = getWeatherAccuracyOverride(
+    options.weather ?? null,
+    move.name,
+  );
+  const accuracy = weatherAccuracy ?? move.accuracy;
+  if (accuracy === null) return true;
 
   const chance =
-    ((move.accuracy / 100) *
-      getAccuracyStageMultiplier(attacker.stages.accuracy)) /
+    ((accuracy / 100) * getAccuracyStageMultiplier(attacker.stages.accuracy)) /
     getAccuracyStageMultiplier(defender.stages.evasion);
 
   return random() < Math.min(1, chance);

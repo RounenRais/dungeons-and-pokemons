@@ -167,7 +167,7 @@ console.log('\n--- olay kartindaki dusmanla dovusmek');
 const forced = await createWildEnemy(12, {
   playerLevel: 20,
   playerBst: 400,
-  isBoss: true,
+  kind: 'boss',
   speciesId: 143,
 });
 check('istenen tur geldi (Snorlax)', forced.pokemon.id, 143);

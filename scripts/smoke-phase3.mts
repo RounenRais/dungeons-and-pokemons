@@ -156,12 +156,25 @@ check('PP bitince Struggle kullanılıyor', getUsableMoves(noPpCombatant).map((m
 check('Struggle geri tepmeli', STRUGGLE.meta.drain < 0, true);
 
 // --- AI ---
+// Yeni AI bütün savaş durumunu okuyor (hava, ekranlar, ustalık), o yüzden
+// testlerde iki combatant'tan sahte bir state kuruyoruz. `enemy` seçimi yapan,
+// `player` hedef taraf.
+function aiState(chooser: Combatant, target: Combatant, skill: number): BattleState {
+  const base = startBattle({
+    playerPokemon: pikachu.pokemon,
+    playerMember: pikachu.member,
+    enemyPokemon: charmander.pokemon,
+    enemyMember: charmander.member,
+  });
+  return { ...base, enemy: chooser, player: target, enemySkill: skill };
+}
+
 const weakEnemy: Combatant = { ...enemySquirtle, currentHp: 5 };
 const aiBattlePlayer: Combatant = { ...pikachu, moves: [quickAttack, thunderbolt], pp: { [quickAttack.id]: 10, [thunderbolt.id]: 10 } };
 // Rakip 5 HP'de: trainer AI her seferinde bayıltacak bir hamle seçmeli.
-const aiChoices = Array.from({ length: 40 }, (_, i) => chooseEnemyMove(aiBattlePlayer, weakEnemy, createRandom(i + 1), 'trainer'));
+const aiChoices = Array.from({ length: 40 }, (_, i) => chooseEnemyMove(aiState(aiBattlePlayer, weakEnemy, 1), createRandom(i + 1)));
 check(
-  'Trainer AI bayıltabiliyorken hep öldürücü hamleyi seçiyor',
+  'Usta AI bayıltabiliyorken hep öldürücü hamleyi seçiyor',
   aiChoices.every((move) => estimateDamage(aiBattlePlayer, weakEnemy, move) >= weakEnemy.currentHp),
   true,
 );
@@ -169,18 +182,18 @@ check(
 // Vahşi AI mainline'daki gibi rastgele oynamalı, trainer AI hesaplı.
 const wildPlayer: Combatant = { ...pikachu, moves: [quickAttack, thunderbolt], pp: { [quickAttack.id]: 30, [thunderbolt.id]: 30 } };
 const healthyEnemy: Combatant = { ...enemySquirtle, currentHp: enemySquirtle.maxHp };
-const wildChoices = Array.from({ length: 120 }, (_, i) => chooseEnemyMove(wildPlayer, healthyEnemy, createRandom(i + 1), 'wild').name);
+const wildChoices = Array.from({ length: 120 }, (_, i) => chooseEnemyMove(aiState(wildPlayer, healthyEnemy, 0), createRandom(i + 1)).name);
 const wildBestRatio = wildChoices.filter((n) => n === 'thunderbolt').length / wildChoices.length;
 check('Vahşi AI hamlesini rastgele seçiyor (%35-%65 aralığı)', wildBestRatio > 0.35 && wildBestRatio < 0.65, true);
 
-const trainerChoices = Array.from({ length: 120 }, (_, i) => chooseEnemyMove(wildPlayer, healthyEnemy, createRandom(i + 1), 'trainer').name);
+const trainerChoices = Array.from({ length: 120 }, (_, i) => chooseEnemyMove(aiState(wildPlayer, healthyEnemy, 1), createRandom(i + 1)).name);
 const trainerBestRatio = trainerChoices.filter((n) => n === 'thunderbolt').length / trainerChoices.length;
-check('Trainer AI güçlü hamleyi belirgin biçimde tercih ediyor', trainerBestRatio > wildBestRatio + 0.2, true);
-console.log(`INFO  en iyi hamleyi seçme oranı — vahşi %${(wildBestRatio * 100).toFixed(0)}, trainer %${(trainerBestRatio * 100).toFixed(0)}`);
+check('Usta AI güçlü hamleyi belirgin biçimde tercih ediyor', trainerBestRatio > wildBestRatio + 0.2, true);
+console.log(`INFO  en iyi hamleyi seçme oranı — ustalık 0: %${(wildBestRatio * 100).toFixed(0)}, ustalık 1: %${(trainerBestRatio * 100).toFixed(0)}`);
 
 // Bağışık hedefe saldırı hamlesi seçilmemeli.
 const groundWall: Combatant = { ...enemyGeodude, currentHp: enemyGeodude.maxHp };
-const vsImmune = Array.from({ length: 60 }, (_, i) => chooseEnemyMove(wildPlayer, groundWall, createRandom(i + 1), 'wild').name);
+const vsImmune = Array.from({ length: 60 }, (_, i) => chooseEnemyMove(aiState(wildPlayer, groundWall, 0), createRandom(i + 1)).name);
 check('Bağışık hedefe işe yaramaz hamle seçilmiyor', vsImmune.every((n) => n !== 'thunderbolt'), true);
 
 // --- Tam savaş akışı ---
@@ -196,7 +209,7 @@ function runFullBattle(seed: number): { outcome: string; turns: number } {
 
   while (state.outcome === 'ongoing' && turns < 300) {
     const playerMove = getUsableMoves(state.player)[0];
-    const enemyMove = chooseEnemyMove(state.enemy, state.player, random, 'trainer');
+    const enemyMove = chooseEnemyMove(state, random);
     state = executeTurn(state, { kind: 'move', move: playerMove }, enemyMove, random).state;
     turns += 1;
   }
@@ -220,7 +233,7 @@ for (let seed = 1; seed <= 20; seed += 1) {
   const random = createRandom(seed * 13);
   while (state.outcome === 'ongoing') {
     const playerMove = getUsableMoves(state.player)[Math.floor(random() * getUsableMoves(state.player).length)];
-    const enemyMove = chooseEnemyMove(state.enemy, state.player, random, 'trainer');
+    const enemyMove = chooseEnemyMove(state, random);
     state = executeTurn(state, { kind: 'move', move: playerMove }, enemyMove, random).state;
     for (const c of [state.player, state.enemy]) {
       if (c.currentHp < 0 || c.currentHp > c.maxHp) hpOk = false;

@@ -214,6 +214,11 @@ export interface TeamMember {
   statusTurns: number;
   /** Ödül ve dükkandan gelen kalıcı stat artışları. */
   permanentBoosts: Partial<BaseStats>;
+  /**
+   * 0-31 arası tek IV değeri (altı stat için aynı).
+   * Eski kayıtlarda yok; okunurken `FIXED_IV` varsayılıyor.
+   */
+  ivs?: number;
 }
 
 export type TileType =

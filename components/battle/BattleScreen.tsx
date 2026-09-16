@@ -9,12 +9,16 @@ import { HpPanel } from "./HpPanel";
 import { MoveAnimation, type MoveAnimationState } from "./MoveAnimation";
 import { VictorySequence, type VictoryResult } from "./VictorySequence";
 import {
+  applySwitch,
   chooseEnemyMove,
   describeEvent,
   executeTurn,
   getEventDelay,
   getUsableMoves,
   syncMemberFromCombatant,
+  STRUGGLE,
+  TERRAIN_LABELS,
+  WEATHER_LABELS,
   type PlayerAction,
   type BattleEvent,
   type BattleState,
@@ -53,6 +57,8 @@ interface ViewState {
   enemyConfused: boolean;
   playerFainted: boolean;
   enemyFainted: boolean;
+  playerSubstitute: boolean;
+  enemySubstitute: boolean;
 }
 
 function viewFromState(state: BattleState): ViewState {
@@ -65,6 +71,8 @@ function viewFromState(state: BattleState): ViewState {
     enemyConfused: state.enemy.confusionTurns > 0,
     playerFainted: state.player.currentHp <= 0,
     enemyFainted: state.enemy.currentHp <= 0,
+    playerSubstitute: state.player.volatile.substituteHp > 0,
+    enemySubstitute: state.enemy.volatile.substituteHp > 0,
   };
 }
 
@@ -181,9 +189,17 @@ export function BattleScreen({
         case "confusion-self-hit":
         case "recoil":
         case "heal":
+        case "volatile-damage":
+        case "hp-set":
+        case "regen":
           return event.side === "player"
             ? { ...current, playerHp: event.newHp }
             : { ...current, enemyHp: event.newHp };
+
+        case "substitute":
+          return event.side === "player"
+            ? { ...current, playerSubstitute: event.action !== "broke" }
+            : { ...current, enemySubstitute: event.action !== "broke" };
 
         case "status-applied":
           return event.side === "player"
@@ -250,6 +266,7 @@ export function BattleScreen({
       // Hasar alan tarafı sarsıp flaşlat.
       if (
         (event.kind === "damage" && event.amount > 0) ||
+        (event.kind === "volatile-damage" && event.amount > 0) ||
         event.kind === "confusion-self-hit" ||
         event.kind === "recoil"
       ) {
@@ -268,14 +285,39 @@ export function BattleScreen({
     setIsPlaying(true);
 
     try {
-      // Vahşi Pokémon rastgele oynar, boss/trainer hesap yapar.
-      const enemyMove = chooseEnemyMove(
-        battle.enemy,
-        battle.player,
+      let current = battle;
+
+      // Değişimde önce yeni Pokémon sahaya gelir — rakip ondan SONRA oynar.
+      // Böylece hem doğru sprite hem de doğru hedef üzerinden hesap yapılır.
+      if (action.kind === "switch") {
+        const swap = applySwitch(
+          current,
+          action.pokemon,
+          action.member,
+          action.reserves,
+        );
+        current = swap.state;
+        setBattle(current);
+        setView(viewFromState(current));
+        await playEvents(swap.events);
+        if (!isMounted.current) return;
+
+        // Bayılan Pokémon'un yerine gelen yedek tur harcamaz: mainline'da da
+        // yeni gelen bedava bir vuruş yemez, sıra oyuncudadır.
+        if (action.forced === true) {
+          setMessage("What will you do?");
+          return;
+        }
+      }
+
+      // Ustalık düşmanın kendi profilinden geliyor (derinlikle yükseliyor).
+      const enemyMove = chooseEnemyMove(current, Math.random);
+      const result = executeTurn(
+        current,
+        action.kind === "switch" ? { kind: "pass" } : action,
+        enemyMove,
         Math.random,
-        battle.isBoss ? "trainer" : "wild",
       );
-      const result = executeTurn(battle, action, enemyMove, Math.random);
 
       await playEvents(result.events);
       if (!isMounted.current) return;
@@ -308,6 +350,7 @@ export function BattleScreen({
 
   function handleSwitch(index: number) {
     if (index === activeIdx) return;
+    const wasForced = mustSwitch;
     const nextTeam = syncActiveIntoTeam();
     const nextMember = nextTeam[index];
     if (nextMember === undefined || nextMember.currentHp <= 0) return;
@@ -324,6 +367,7 @@ export function BattleScreen({
       pokemon: nextPokemon,
       member: nextMember,
       reserves: countReserves(nextTeam, index),
+      forced: wasForced,
     });
   }
 
@@ -380,7 +424,14 @@ export function BattleScreen({
   });
 
   const usableMoves = getUsableMoves(battle.player);
-  const highlighted = highlightedMove ?? usableMoves[0] ?? null;
+  const usableIds = new Set(usableMoves.map((move) => move.id));
+  // Disable/Taunt yüzünden kullanılamayan hareketler listeden kaybolmasın —
+  // yerlerinde, ama pasif dursunlar.
+  const displayedMoves =
+    usableMoves.length === 1 && usableMoves[0].id === STRUGGLE.id
+      ? usableMoves
+      : battle.player.moves;
+  const highlighted = highlightedMove ?? displayedMoves[0] ?? null;
   const reserveCount = countReserves(teamState, activeIdx);
   const canAct =
     !isPlaying && battle.outcome === "ongoing" && battle.player.currentHp > 0;
@@ -398,6 +449,16 @@ export function BattleScreen({
     battle.player.pokemon.sprites.animatedBack ??
     battle.player.pokemon.sprites.back ??
     battle.player.pokemon.sprites.front;
+
+  // Sahadaki hava/zemin rozetleri — hasarın neden değiştiğini görebilmek için.
+  const fieldBadges: string[] = [];
+  if (battle.field.weather !== null) {
+    fieldBadges.push(WEATHER_LABELS[battle.field.weather.kind]);
+  }
+  if (battle.field.terrain !== null) {
+    fieldBadges.push(TERRAIN_LABELS[battle.field.terrain.kind]);
+  }
+  if (battle.field.trickRoom > 0) fieldBadges.push("Trick Room");
 
   const xpNeeded = getXpToNextLevel(
     battle.player.member.level,
@@ -458,6 +519,20 @@ export function BattleScreen({
           isFainted={view.playerFainted}
         />
 
+        {/* Weather / terrain badges — top centre of the arena. */}
+        {fieldBadges.length > 0 && (
+          <div className="absolute left-1/2 top-1 z-40 flex -translate-x-1/2 gap-1">
+            {fieldBadges.map((badge) => (
+              <span
+                key={badge}
+                className="rounded-sm bg-black/55 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-white"
+              >
+                {badge}
+              </span>
+            ))}
+          </div>
+        )}
+
         {/* Your status panel — bottom right */}
         <div
           className="absolute z-30"
@@ -505,11 +580,11 @@ export function BattleScreen({
           the right — the FRLG FIGHT screen. */}
       <div className="grid gap-2 sm:grid-cols-[1fr_14rem]">
         <div className="gba-command-box grid grid-cols-2 gap-x-4 gap-y-1 px-4 py-3">
-          {usableMoves.map((move) => (
+          {displayedMoves.map((move) => (
             <MoveButton
               key={move.id}
               move={move}
-              disabled={!canAct}
+              disabled={!canAct || !usableIds.has(move.id)}
               onFocus={() => setHighlightedMove(move)}
               onClick={() => void runTurn({ kind: "move", move })}
             />

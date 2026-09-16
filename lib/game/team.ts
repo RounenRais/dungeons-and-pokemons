@@ -1,6 +1,6 @@
 // Tür verisinden (Pokemon) oynanabilir bir takım üyesi (TeamMember) üretir.
 
-import { calculateMaxHp } from "./stats";
+import { calculateMaxHp, clampIv, FIXED_IV } from "./stats";
 import type { GrowthRate, Move, Pokemon, TeamMember } from "@/lib/types";
 
 /** Takımın alabileceği maksimum üye sayısı (mainline ile aynı). */
@@ -26,13 +26,16 @@ export interface CreateTeamMemberOptions {
   nickname?: string | null;
   /** Bilinmiyorsa starter'ların çoğunda olduğu gibi 'medium-slow' varsayılır. */
   growthRate?: GrowthRate;
+  /** 0-31 arası IV; verilmezse herkes için sabit olan varsayılan kullanılır. */
+  ivs?: number;
 }
 
 export function createTeamMember(
   pokemon: Pokemon,
   options: CreateTeamMemberOptions,
 ): TeamMember {
-  const maxHp = calculateMaxHp(pokemon.baseStats, options.level);
+  const ivs = clampIv(options.ivs ?? FIXED_IV);
+  const maxHp = calculateMaxHp(pokemon.baseStats, options.level, {}, ivs);
   const moves = options.moves.slice(0, MAX_MOVES);
 
   return {
@@ -51,6 +54,7 @@ export function createTeamMember(
     status: "none",
     statusTurns: 0,
     permanentBoosts: {},
+    ivs,
   };
 }
 

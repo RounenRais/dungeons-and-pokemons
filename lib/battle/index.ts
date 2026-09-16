@@ -1,6 +1,6 @@
 // Savaş motorunun tek giriş noktası.
 
-export { chooseEnemyMove, type AiProfile } from "./ai";
+export { chooseEnemyMove, type ChooseMoveOptions } from "./ai";
 export {
   calculateDamage,
   estimateDamage,
@@ -12,6 +12,7 @@ export {
   type DamageResult,
 } from "./damage";
 export {
+  applySwitch,
   createCombatant,
   executeTurn,
   getEffectiveSpeed,
@@ -40,4 +41,21 @@ export {
   STATUS_COLORS,
   STATUS_LABELS,
 } from "./status";
+export {
+  createFieldState,
+  createSides,
+  TERRAIN_LABELS,
+  WEATHER_LABELS,
+  type FieldState,
+  type SideState,
+  type TerrainKind,
+  type WeatherKind,
+} from "./field";
+export {
+  getMoveTrait,
+  hasMoveTrait,
+  MOVE_TRAITS,
+  type MoveTrait,
+} from "./moveTraits";
+export { createVolatileState, type VolatileState } from "./volatile";
 export type * from "./types";

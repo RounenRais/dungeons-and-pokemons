@@ -46,13 +46,16 @@ const SAVE_KEY = "pokerun:save";
  * to the bag, v5 spread the routes across the whole sheet and put quotas on
  * shops/rests, v6 gives every run a starting Revive and ends the run when you
  * lose without one — an old save has no Revive and would end on its next loss.
+ * v7 genişletti savaş state'ini (hava/zemin, taraf efektleri, geçici durumlar);
+ * devam eden eski bir savaş bu alanlar olmadan motoru patlatır, o yüzden
+ * migrate sadece savaşı atıp koşuyu haritadan sürdürüyor.
  *
  * Not: dinlenme kontrol noktası (`lastRestNodeId`) ve `deepestDepth` sürüm
  * gerektirmedi; eski kayıtta bu alanlar yok, zustand başlangıç değerlerini
  * (null / 0) bırakıyor ve ilk yenilgi seni act'in başına gönderiyor. Sürümü
  * artırmak devam eden koşuları boşuna silerdi.
  */
-export const SAVE_VERSION = 6;
+export const SAVE_VERSION = 7;
 
 /**
  * Yenilginin sonucu. Çağıran taraf (sayfa) buna bakarak doğru günlük
@@ -550,6 +553,21 @@ export const useGameStore = create<GameState>()(
       name: SAVE_KEY,
       version: SAVE_VERSION,
       storage: createJSONStorage(() => localStorage),
+      /**
+       * Eski kayıtları silmek yerine onarıyoruz: koşunun kendisi (takım, altın,
+       * konum, relikler) uyumlu; sadece yarıda kalmış savaşın şekli değişti.
+       */
+      migrate: (persisted, version) => {
+        const state = persisted as Partial<GameState>;
+        if (version < 7) {
+          return {
+            ...state,
+            battle: null,
+            phase: state.phase === "battle" ? "board" : state.phase,
+          };
+        }
+        return state;
+      },
       // Hydration'ı elle tetikliyoruz: sunucu ve istemcinin ilk render'ı
       // aynı olsun, kayıt sonradan yüklensin.
       skipHydration: true,

@@ -168,10 +168,12 @@ useGameStore.getState().consumeItem('potion');
 check('Eşya tüketiliyor', countOf('potion'), 1);
 useGameStore.getState().consumeItem('potion');
 check('Biten eşya envanterden çıkıyor', countOf('potion'), 0);
+// Koşu başlangıç eşyalarıyla (Revive + Poké Ball) açıldığı için biten iksir
+// silinince geriye o ikisi kalmalı.
 check(
-  'Biten eşya envanterden siliniyor (Revive duruyor)',
+  'Biten eşya envanterden siliniyor (başlangıç eşyaları duruyor)',
   useGameStore.getState().player.inventory.length,
-  1,
+  2,
 );
 
 // Yenilgi: Revive varsa harcanır ve koşu sürer.

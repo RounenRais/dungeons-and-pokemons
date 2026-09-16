@@ -195,7 +195,7 @@ export function rollChestLoot(
     const range = getBstRange(
       context.pokemon.baseStatTotal,
       context.tileIndex,
-      true,
+      "elite",
     );
     return {
       kind: "pokemon",

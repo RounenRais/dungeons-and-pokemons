@@ -160,11 +160,12 @@ async function simulateRun(seed: number): Promise<RunReport> {
       continue;
     }
 
-    const isBoss = node.type === 'BOSS' || node.type === 'ELITE';
+    const kind = node.type === 'BOSS' ? 'boss' : node.type === 'ELITE' ? 'elite' : 'wild';
+    const isBoss = kind !== 'wild';
     const enemy = await createWildEnemy(position, {
       playerLevel: member.level,
       playerBst: pokemon.baseStatTotal,
-      isBoss,
+      kind,
     });
 
     let state = startBattle({
@@ -173,13 +174,14 @@ async function simulateRun(seed: number): Promise<RunReport> {
       enemyPokemon: enemy.pokemon,
       enemyMember: enemy.member,
       isBoss,
+      enemySkill: enemy.skill,
     });
     let turns = 0;
     while (state.outcome === 'ongoing' && turns < 200) {
       state = executeTurn(
         state,
         { kind: 'move', move: pickPlayerMove(state.player, state.enemy) },
-        chooseEnemyMove(state.enemy, state.player, random, isBoss ? 'trainer' : 'wild'),
+        chooseEnemyMove(state, random),
         random,
       ).state;
       turns += 1;

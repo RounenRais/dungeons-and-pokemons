@@ -33,7 +33,7 @@ import {
   type MapEvent,
 } from "@/lib/data/mapEvents";
 import type { ShopItem } from "@/lib/data/shopItems";
-import { createWildEnemy } from "@/lib/game/enemy";
+import { createWildEnemy, type EncounterKind } from "@/lib/game/enemy";
 import { applyChestBoost } from "@/lib/game/chest";
 import {
   isRetryNode,
@@ -109,7 +109,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
   if (map === null) return null;
 
   /** Opens a battle for a battle-flavoured node. */
-  async function startNodeBattle(isElite: boolean, speciesId?: number) {
+  async function startNodeBattle(kind: EncounterKind, speciesId?: number) {
     const store = useGameStore.getState();
     const activeMember = selectActiveMember(store);
     const activePokemon = selectPokemonFor(store, activeMember);
@@ -118,11 +118,12 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     setIsLoadingBattle(true);
     try {
       const enemy = await createWildEnemy(store.player.position, {
-        isBoss: isElite,
+        kind,
         playerLevel: activeMember.level,
         playerBst: activePokemon.baseStatTotal,
         speciesId,
       });
+      const isElite = kind !== "wild";
 
       store.addLog(
         `${isElite ? "A powerful" : "A wild"} ${enemy.pokemon.displayName} (Lv ${enemy.member.level}) appeared!`,
@@ -135,6 +136,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
           enemyPokemon: enemy.pokemon,
           enemyMember: enemy.member,
           isBoss: isElite,
+          enemySkill: enemy.skill,
           playerModifiers: selectBattleModifiers(store),
           playerReserves: store.player.team.filter(
             (entry, index) =>
@@ -158,11 +160,13 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
   async function resolveNode(node: MapNode) {
     switch (node.type) {
       case "BATTLE":
-        await startNodeBattle(false);
+        await startNodeBattle("wild");
         return;
       case "ELITE":
+        await startNodeBattle("elite");
+        return;
       case "BOSS":
-        await startNodeBattle(true);
+        await startNodeBattle("boss");
         return;
       case "CHEST":
         setChestTier(rollChestTier());
@@ -347,7 +351,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     store.addLog(outcome.text, "info");
     setActiveEvent(null);
 
-    if (outcome.fight === true) void startNodeBattle(true, shownSpecies);
+    if (outcome.fight === true) void startNodeBattle("elite", shownSpecies);
   }
 
   // --- Shop ---------------------------------------------------------------
