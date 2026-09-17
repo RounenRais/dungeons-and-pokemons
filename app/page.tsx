@@ -7,7 +7,13 @@ import { MapScreen } from "@/components/map/MapScreen";
 import { StarterWheel } from "@/components/StarterWheel";
 import { RunOver } from "@/components/RunOver";
 import { MainMenu } from "@/components/menu/MainMenu";
+import { NamePrompt } from "@/components/menu/NamePrompt";
 import { HowToPlay } from "@/components/menu/HowToPlay";
+import {
+  readLeaderboard,
+  submitRun,
+  type LeaderboardEntry,
+} from "@/lib/game/leaderboard";
 import {
   BattleScreen,
   type BattleResult,
@@ -30,14 +36,22 @@ export default function GamePage() {
   const records = useGameStore((state) => state.records);
   const bossesDefeated = useGameStore((state) => state.bossesDefeated);
   const deepestDepth = useGameStore((state) => state.deepestDepth);
+  const playerName = useGameStore((state) => state.playerName);
+  /**
+   * Skor tablosu localStorage'da; ilk render sunucuyla aynı olsun diye boş
+   * başlıyor ve hydration'dan sonra dolduruluyor.
+   */
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  /** Az önce eklenen koşunun satırı — menüde vurgulanıyor. */
+  const [newEntryId, setNewEntryId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   /**
    * Koşu dışı ekranlar. Kayıtlı bir koşu varsa sayfa doğrudan oyuna
    * dönüyor; menü sadece ortada koşu yokken karşılıyor.
    */
-  const [menuScreen, setMenuScreen] = useState<"menu" | "how-to" | "wheel">(
-    "menu",
-  );
+  const [menuScreen, setMenuScreen] = useState<
+    "menu" | "how-to" | "name" | "wheel"
+  >("menu");
   const [isGuideOpen, setIsGuideOpen] = useState(false);
 
   // The save only exists in the browser. Hydration is triggered by hand so the
@@ -56,12 +70,40 @@ export default function GamePage() {
           error instanceof Error ? error.message : "Could not read the save.",
         );
         useGameStore.setState({ hydrated: true });
+      })
+      .finally(() => {
+        // Skor tablosu da kayıtla aynı yerde (localStorage) ve aynı sebeple
+        // sonradan okunuyor: ilk render sunucununkiyle aynı kalsın.
+        if (!cancelled) setLeaderboard(readLeaderboard());
       });
 
     return () => {
       cancelled = true;
     };
   }, []);
+
+  /**
+   * Biten koşuyu skor tablosuna yazar.
+   *
+   * Ad atlandıysa (`playerName === null`) `submitRun` hiçbir şey yazmaz ama
+   * yine de güncel tabloyu döner — menü doğru listeyi gösterir.
+   */
+  function recordRun() {
+    const store = useGameStore.getState();
+    const bestLevel = store.player.team.reduce(
+      (max, member) => Math.max(max, member.level),
+      0,
+    );
+    const before = readLeaderboard();
+    const next = submitRun(store.playerName, {
+      depth: Math.max(store.deepestDepth, store.player.position),
+      bestLevel,
+      bossesDefeated: store.bossesDefeated,
+    });
+    const known = new Set(before.map((entry) => entry.id));
+    setNewEntryId(next.find((entry) => !known.has(entry.id))?.id ?? null);
+    setLeaderboard(next);
+  }
 
   function handleBattleFinish(result: BattleResult) {
     const store = useGameStore.getState();
@@ -105,6 +147,7 @@ export default function GamePage() {
           "You were defeated with no Revive left. The run is over.",
           "bad",
         );
+        recordRun();
       } else {
         store.addLog(
           defeat.returnedTo === "rest"
@@ -166,8 +209,11 @@ export default function GamePage() {
           bestLevel={bestLevel}
           bossesDefeated={bossesDefeated}
           records={records}
+          leaderboardName={playerName}
+          madeLeaderboard={newEntryId !== null}
           onRestart={() => {
             setMenuScreen("menu");
+            setNewEntryId(null);
             useGameStore.getState().newGame();
           }}
         />
@@ -185,6 +231,22 @@ export default function GamePage() {
       );
     }
 
+    if (menuScreen === "name") {
+      return (
+        <main className="flex flex-1 flex-col">
+          <NamePrompt
+            onConfirm={(name) => {
+              useGameStore.getState().setPlayerName(name);
+              setNewEntryId(null);
+              setMenuScreen("wheel");
+            }}
+            onBack={() => setMenuScreen("menu")}
+          />
+          <Credits />
+        </main>
+      );
+    }
+
     if (menuScreen === "menu") {
       return (
         <main className="flex flex-1 flex-col">
@@ -195,7 +257,9 @@ export default function GamePage() {
           )}
           <MainMenu
             records={records}
-            onPlay={() => setMenuScreen("wheel")}
+            leaderboard={leaderboard}
+            highlightId={newEntryId}
+            onPlay={() => setMenuScreen("name")}
             onHowToPlay={() => setMenuScreen("how-to")}
           />
           <Credits />

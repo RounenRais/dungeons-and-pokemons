@@ -4,7 +4,7 @@
 // plus numeric HP and an EXP bar on the player's side.
 
 import { motion } from "framer-motion";
-import { STATUS_COLORS, STATUS_LABELS } from "@/lib/battle";
+import { STATUS_COLORS, STATUS_LABELS, type VolatileBadge } from "@/lib/battle";
 import type { StatusAilment } from "@/lib/types";
 
 interface HpPanelProps {
@@ -18,6 +18,12 @@ interface HpPanelProps {
   showDetails: boolean;
   /** Progress through the current level (0-1). */
   xpRatio?: number;
+  /**
+   * Geçici etkiler (Aqua Ring, Taunt, Leech Seed…). Kalıcı durumlarla aynı
+   * satırda duruyorlar: bir hamlenin bir şey yaptığı ancak ekranda iz
+   * bıraktığında anlaşılıyor.
+   */
+  badges?: VolatileBadge[];
 }
 
 function getHpColor(ratio: number): string {
@@ -35,6 +41,7 @@ export function HpPanel({
   isConfused,
   showDetails,
   xpRatio = 0,
+  badges = [],
 }: HpPanelProps) {
   const ratio = maxHp > 0 ? Math.max(0, Math.min(1, currentHp / maxHp)) : 0;
 
@@ -93,8 +100,8 @@ export function HpPanel({
         </>
       )}
 
-      {(status !== "none" || isConfused) && (
-        <div className="mt-1 flex gap-1">
+      {(status !== "none" || isConfused || badges.length > 0) && (
+        <div className="mt-1 flex flex-wrap gap-1">
           {status !== "none" && (
             <span
               className="rounded-sm px-1 text-[7px] font-bold uppercase text-white"
@@ -108,6 +115,16 @@ export function HpPanel({
               Confused
             </span>
           )}
+          {badges.map((badge) => (
+            <span
+              key={badge.label}
+              title={badge.title}
+              className="rounded-sm px-1 text-[7px] font-bold uppercase text-white"
+              style={{ backgroundColor: badge.color }}
+            >
+              {badge.label}
+            </span>
+          ))}
         </div>
       )}
     </div>

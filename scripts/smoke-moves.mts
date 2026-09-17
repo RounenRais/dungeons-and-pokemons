@@ -10,6 +10,8 @@
 import {
 
   executeTurn,
+  getUsableMoves,
+  getVolatileBadges,
   startBattle,
   type BattleEvent,
   type BattleState,
@@ -508,6 +510,83 @@ const alwaysHit = () => 0.01;
   check(
     'Gönüllü değişimde düşman bedava hamle yapıyor',
     voluntary.events.some((event) => event.kind === 'move-used'),
+    true,
+  );
+}
+
+// --- Kısıtlayıcı hareketler indiği turda ısırıyor mu? ----------------------
+//
+// Hamleler turun BAŞINDA seçiliyor. Kısıtlamaya sadece seçim anında bakılırsa
+// (eskiden öyleydi) Taunt indiği tur hiçbir şey yapmıyor: rakip çoktan seçtiği
+// iyileşme hamlesini rahatça kullanıyor. Oyuncu tarafından bu, "Taunt bozuk"
+// demek. Aşağısı bunun geri gelmediğini doğruluyor.
+{
+  const state = await arena('mew', ['taunt', 'tackle'], 'blissey', ['soft-boiled', 'tackle']);
+  const result = executeTurn(
+    state,
+    { kind: 'move', move: moveOf(state, 0) },
+    enemyMoveOf(state, 0),
+    alwaysHit,
+  );
+
+  check('Taunt tutuyor', result.state.enemy.volatile.taunt > 0, true);
+  check(
+    'Taunt indiği turda rakibin status hamlesini kesiyor',
+    result.events.some(
+      (event) => event.kind === 'blocked' && event.reason === 'taunt',
+    ),
+    true,
+  );
+  check(
+    'Taunt altında status hamlesi seçilemiyor',
+    getUsableMoves(result.state.enemy).some((move) => move.category === 'status'),
+    false,
+  );
+  check(
+    'Taunt saldırı hamlelerine dokunmuyor',
+    getUsableMoves(result.state.enemy).map((move) => move.name),
+    ['tackle'],
+  );
+
+  // Rozet: motorda olan şeyin ekranda da izi olsun.
+  check(
+    'Taunt rozet olarak görünüyor',
+    getVolatileBadges(result.state.enemy).some((badge) => badge.label.startsWith('Taunt')),
+    true,
+  );
+}
+
+// --- Aqua Ring her turun sonunda iyileştiriyor mu? -------------------------
+{
+  const state = await arena('mew', ['aqua-ring', 'tackle'], 'blissey', ['tackle']);
+  state.player.currentHp = Math.floor(state.player.maxHp / 2);
+
+  const first = executeTurn(
+    state,
+    { kind: 'move', move: moveOf(state, 0) },
+    enemyMoveOf(state, 0),
+    alwaysHit,
+  );
+  check('Aqua Ring tutuyor', first.state.player.volatile.aquaRing, true);
+  check(
+    'Aqua Ring rozet olarak görünüyor',
+    getVolatileBadges(first.state.player).some((badge) => badge.label === 'Aqua Ring'),
+    true,
+  );
+
+  // Perde arkasında çalışması yetmez; tur sonunda gerçekten HP dönmeli.
+  const healed = first.events.filter((event) => event.kind === 'heal');
+  check('Aqua Ring ilk turda iyileştiriyor', healed.length > 0, true);
+
+  const second = executeTurn(
+    first.state,
+    { kind: 'move', move: moveOf(first.state, 1) },
+    enemyMoveOf(first.state, 0),
+    alwaysHit,
+  );
+  check(
+    'Aqua Ring sonraki turda da iyileştiriyor',
+    second.events.some((event) => event.kind === 'heal' && event.side === 'player'),
     true,
   );
 }

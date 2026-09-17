@@ -51,6 +51,7 @@ import { createVolatileState, cloneVolatileState } from "./volatile";
 import type {
   BattleEvent,
   BattleState,
+  BlockReason,
   Combatant,
   Side,
   TurnResult,
@@ -258,23 +259,44 @@ export function getEffectiveSpeed(
 }
 
 /**
+ * Bu hamleyi şu anda kullanmayı engelleyen kısıtlama — yoksa null.
+ *
+ * İki yerden sorulur: hamle SEÇİLİRKEN (`getUsableMoves`, oyuncunun butonları
+ * ve AI) ve hamle OYNANIRKEN (`performMove`). İkincisi şart: hem oyuncu hem
+ * düşman hamlesini turun başında seçiyor, yani Taunt'un kendisi o turda
+ * indiğinde rakip yasaklı hamleyi çoktan seçmiş oluyor. Sadece seçim anında
+ * baksaydık — ki eskiden öyleydi — Taunt indiği tur hiçbir şey yapmıyor,
+ * rakip iyileşme hamlesini rahatça kullanıyordu; oyuncuya hamle hiç
+ * çalışmıyormuş gibi görünen şey buydu.
+ */
+export function getMoveRestriction(
+  combatant: Combatant,
+  move: Move,
+): Exclude<BlockReason, "paralysis" | "sleep" | "freeze" | "flinch" | "confusion" | "recharge" | "infatuation"> | null {
+  const { volatile } = combatant;
+  if (move.id === STRUGGLE.id) return null;
+  // PP kaydı yoksa hamle bu Pokémon'un setinde değildir (test/araç yolu ya da
+  // Encore gibi zorlanmış bir hamle); "PP bitti" saymak yanlış olur.
+  const pp = combatant.pp[move.id];
+  if (pp !== undefined && pp <= 0) return "no-pp";
+  if (volatile.disabled !== null && volatile.disabled.moveId === move.id) {
+    return "disabled";
+  }
+  if (volatile.taunt > 0 && move.category === "status") return "taunt";
+  if (volatile.torment && volatile.lastMoveId === move.id) return "torment";
+  return null;
+}
+
+/**
  * Kullanılabilir hareketler.
  *
  * PP'si bitenler, Disable'lananlar, Taunt altında status olanlar ve Torment
  * yüzünden tekrarlanamayanlar elenir; hiçbiri kalmazsa Struggle.
  */
 export function getUsableMoves(combatant: Combatant): Move[] {
-  const { volatile } = combatant;
-
-  const usable = combatant.moves.filter((move) => {
-    if ((combatant.pp[move.id] ?? 0) <= 0) return false;
-    if (volatile.disabled !== null && volatile.disabled.moveId === move.id) {
-      return false;
-    }
-    if (volatile.taunt > 0 && move.category === "status") return false;
-    if (volatile.torment && volatile.lastMoveId === move.id) return false;
-    return true;
-  });
+  const usable = combatant.moves.filter(
+    (move) => getMoveRestriction(combatant, move) === null,
+  );
 
   return usable.length > 0 ? usable : [STRUGGLE];
 }
@@ -521,7 +543,11 @@ function applyTraitStatusMove(
     }
     attacker.volatile.enduring = true;
     attacker.volatile.protectStreak += 1;
-    events.push({ kind: "message", text: "It braced itself!" });
+    events.push({
+      kind: "message",
+      side: attacker.side,
+      text: "braced itself!",
+    });
     return true;
   }
 
@@ -553,7 +579,8 @@ function applyTraitStatusMove(
     attacker.volatile.toxicCounter = 0;
     events.push({
       kind: "message",
-      text: "It went to sleep and became healthy!",
+      side: attacker.side,
+      text: "went to sleep and became healthy!",
     });
     return true;
   }
@@ -604,7 +631,8 @@ function applyTraitStatusMove(
     });
     events.push({
       kind: "message",
-      text: "It cut its own HP and maximised its Attack!",
+      side: attacker.side,
+      text: "cut its own HP and maximised its Attack!",
     });
     return true;
   }
@@ -619,13 +647,21 @@ function applyTraitStatusMove(
   if (trait.focusEnergy === true) {
     if (attacker.volatile.focusEnergy) return fail();
     attacker.volatile.focusEnergy = true;
-    events.push({ kind: "message", text: "It is getting pumped!" });
+    events.push({
+      kind: "message",
+      side: attacker.side,
+      text: "is getting pumped!",
+    });
     return true;
   }
 
   if (trait.lockOn === true) {
     attacker.volatile.lockOn = true;
-    events.push({ kind: "message", text: "It took aim at its target!" });
+    events.push({
+      kind: "message",
+      side: attacker.side,
+      text: "took aim at its target!",
+    });
     return true;
   }
 
@@ -644,7 +680,11 @@ function applyTraitStatusMove(
         amount: cost,
         newHp: attacker.currentHp,
       });
-      events.push({ kind: "message", text: "It cut its own HP and laid a curse!" });
+      events.push({
+        kind: "message",
+        side: attacker.side,
+        text: "cut its own HP and laid a curse!",
+      });
       return true;
     }
     // Hayalet değilse: hız -1, saldırı ve savunma +1.
@@ -670,7 +710,8 @@ function applyTraitStatusMove(
     attacker.volatile.destinyBond = true;
     events.push({
       kind: "message",
-      text: "It is trying to take its foe down with it!",
+      side: attacker.side,
+      text: "is trying to take its foe down with it!",
     });
     return true;
   }
@@ -691,14 +732,22 @@ function applyTraitStatusMove(
   if (trait.attract === true) {
     if (defender.volatile.infatuated) return fail();
     defender.volatile.infatuated = true;
-    events.push({ kind: "message", text: "It fell in love!" });
+    events.push({
+      kind: "message",
+      side: defender.side,
+      text: "fell in love!",
+    });
     return true;
   }
 
   if (trait.yawn === true) {
     if (defender.volatile.yawn > 0 || defender.status !== "none") return fail();
     defender.volatile.yawn = 2;
-    events.push({ kind: "message", text: "It grew drowsy!" });
+    events.push({
+      kind: "message",
+      side: defender.side,
+      text: "grew drowsy!",
+    });
     return true;
   }
 
@@ -707,14 +756,22 @@ function applyTraitStatusMove(
       return fail();
     }
     defender.volatile.nightmare = true;
-    events.push({ kind: "message", text: "It began having a nightmare!" });
+    events.push({
+      kind: "message",
+      side: defender.side,
+      text: "began having a nightmare!",
+    });
     return true;
   }
 
   if (trait.taunt !== undefined) {
     if (defender.volatile.taunt > 0) return fail();
     defender.volatile.taunt = trait.taunt;
-    events.push({ kind: "message", text: "It fell for the taunt!" });
+    events.push({
+      kind: "message",
+      side: defender.side,
+      text: `fell for the taunt — no status moves for ${trait.taunt} turns!`,
+    });
     return true;
   }
 
@@ -722,7 +779,11 @@ function applyTraitStatusMove(
     const target = defender.volatile.lastMoveId;
     if (target === null || defender.volatile.disabled !== null) return fail();
     defender.volatile.disabled = { moveId: target, turns: trait.disable };
-    events.push({ kind: "message", text: "Its move was disabled!" });
+    events.push({
+      kind: "message",
+      side: defender.side,
+      text: "had its last move disabled!",
+    });
     return true;
   }
 
@@ -730,14 +791,22 @@ function applyTraitStatusMove(
     const target = defender.volatile.lastMoveId;
     if (target === null || defender.volatile.encore !== null) return fail();
     defender.volatile.encore = { moveId: target, turns: trait.encore };
-    events.push({ kind: "message", text: "It received an encore!" });
+    events.push({
+      kind: "message",
+      side: defender.side,
+      text: "received an encore!",
+    });
     return true;
   }
 
   if (trait.torment === true) {
     if (defender.volatile.torment) return fail();
     defender.volatile.torment = true;
-    events.push({ kind: "message", text: "It was subjected to torment!" });
+    events.push({
+      kind: "message",
+      side: defender.side,
+      text: "was subjected to torment!",
+    });
     return true;
   }
 
@@ -746,7 +815,8 @@ function applyTraitStatusMove(
     attacker.volatile.magnetRise = trait.magnetRise;
     events.push({
       kind: "message",
-      text: "It levitated with electromagnetism!",
+      side: attacker.side,
+      text: "levitated with electromagnetism!",
     });
     return true;
   }
@@ -766,21 +836,33 @@ function applyTraitStatusMove(
     const side = sideOf(state, attacker.side);
     if (side.wish !== null) return fail();
     side.wish = { turns: 2, amount: Math.floor(attacker.maxHp / 2) };
-    events.push({ kind: "message", text: "It made a wish!" });
+    events.push({
+      kind: "message",
+      side: attacker.side,
+      text: "made a wish!",
+    });
     return true;
   }
 
   if (trait.aquaRing === true) {
     if (attacker.volatile.aquaRing) return fail();
     attacker.volatile.aquaRing = true;
-    events.push({ kind: "message", text: "It surrounded itself with a veil of water!" });
+    events.push({
+      kind: "message",
+      side: attacker.side,
+      text: "surrounded itself with a veil of water — it will recover a little HP each turn!",
+    });
     return true;
   }
 
   if (trait.ingrain === true) {
     if (attacker.volatile.ingrain) return fail();
     attacker.volatile.ingrain = true;
-    events.push({ kind: "message", text: "It planted its roots!" });
+    events.push({
+      kind: "message",
+      side: attacker.side,
+      text: "planted its roots — it will recover a little HP each turn!",
+    });
     return true;
   }
 
@@ -995,7 +1077,11 @@ function applyDamageWithEndurance(
 
   if (target.currentHp <= 0 && target.volatile.enduring) {
     target.currentHp = 1;
-    events.push({ kind: "message", text: "It endured the hit!" });
+    events.push({
+      kind: "message",
+      side: target.side,
+      text: "endured the hit!",
+    });
     return applied - 1;
   }
 
@@ -1216,6 +1302,22 @@ function performMove(
   if (attacker.volatile.infatuated && random() < 0.5) {
     events.push({ kind: "blocked", side: attacker.side, reason: "infatuation" });
     return;
+  }
+
+  // Kısıtlama bu turda inmiş olabilir: hamleler turun BAŞINDA seçiliyor, yani
+  // rakibin Taunt'u bizden önce oynadığında seçtiğimiz status hamlesi artık
+  // yasak. Sadece seçim anında baksaydık Taunt indiği tur hiçbir şey yapmazdı.
+  // Kilitlenmiş (Outrage) ve doldurma turundaki hamleler kendi akışını sürdürür.
+  if (!isCharging && attacker.volatile.locked === null) {
+    const restriction = getMoveRestriction(attacker, move);
+    if (restriction !== null) {
+      events.push({
+        kind: "blocked",
+        side: attacker.side,
+        reason: restriction,
+      });
+      return;
+    }
   }
 
   // İki turlu hareketin doldurma turu.
@@ -1865,7 +1967,11 @@ function applyEndOfTurn(
       volatile.trapTurns -= 1;
       if (volatile.trapTurns <= 0) {
         volatile.trapMove = null;
-        events.push({ kind: "message", text: "It was freed!" });
+        events.push({
+          kind: "message",
+          side: combatant.side,
+          text: "was freed!",
+        });
       }
     }
   }
@@ -1886,7 +1992,11 @@ function applyEndOfTurn(
     if (combatant.volatile.perish === 0) {
       combatant.currentHp = 0;
       events.push({ kind: "hp-set", side: combatant.side, newHp: 0 });
-      events.push({ kind: "message", text: "Its perish count fell to 0!" });
+      events.push({
+        kind: "message",
+        side: combatant.side,
+        text: "ran out of time — its perish count hit 0!",
+      });
     } else {
       events.push({
         kind: "message",
@@ -1948,7 +2058,11 @@ function applyEndOfTurn(
         volatile.locked = null;
         volatile.rollCount = 0;
         if (confuse && combatant.currentHp > 0) {
-          events.push({ kind: "message", text: "It became confused due to fatigue!" });
+          events.push({
+            kind: "message",
+            side: combatant.side,
+            text: "became confused due to fatigue!",
+          });
           combatant.confusionTurns = 2 + Math.floor(random() * 4);
           events.push({ kind: "confusion-applied", side: combatant.side });
         }
@@ -2008,7 +2122,11 @@ function checkOutcome(state: BattleState, events: BattleEvent[]): void {
       fallen.volatile.destinyBond = false;
       other.currentHp = 0;
       events.push({ kind: "hp-set", side: other.side, newHp: 0 });
-      events.push({ kind: "message", text: "It took its foe down with it!" });
+      events.push({
+        kind: "message",
+        side: fallen.side,
+        text: "took its foe down with it!",
+      });
     }
   }
 

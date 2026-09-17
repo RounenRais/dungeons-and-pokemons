@@ -13,7 +13,7 @@ import { getMemberName } from "@/lib/game/team";
 import {
   findItemEvolution,
   getEvolutionChain,
-  getPokemon,
+  getPokemonForSpecies,
   getSpecies,
 } from "@/lib/pokeapi";
 import type { InventoryEntry, Pokemon, TeamMember } from "@/lib/types";
@@ -118,7 +118,7 @@ export function TeamPanel({
     if (member === undefined || pokemon === null || busy) return;
     setBusy(true);
     try {
-      const evolved = await getPokemon(option.toSpeciesName);
+      const evolved = await getPokemonForSpecies(option.toSpeciesName);
       const evolvedSpecies = await getSpecies(evolved.speciesId);
       const newMaxHp = calculateMaxHp(
         evolved.baseStats,

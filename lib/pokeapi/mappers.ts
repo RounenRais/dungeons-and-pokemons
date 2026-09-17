@@ -344,7 +344,11 @@ export function mapSpecies(raw: RawPokemonSpecies): PokemonSpecies {
     isLegendary: raw.is_legendary,
     isMythical: raw.is_mythical,
     isBaby: raw.is_baby,
-    varieties: raw.varieties.map((variety) => variety.pokemon.name),
+    // Varsayılan form başa: `getPokemonForSpecies` ilk elemanı oynanabilir
+    // form olarak alıyor.
+    varieties: [...raw.varieties]
+      .sort((a, b) => Number(b.is_default) - Number(a.is_default))
+      .map((variety) => variety.pokemon.name),
     flavorText: flavor ? cleanText(flavor.flavor_text) : "",
   };
 }

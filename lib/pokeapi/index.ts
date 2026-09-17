@@ -11,6 +11,7 @@ export {
   getMoves,
   getPokemon,
   getPokemonCount,
+  getPokemonForSpecies,
   getSpecies,
 } from "./client";
 

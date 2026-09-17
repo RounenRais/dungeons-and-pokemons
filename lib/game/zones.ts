@@ -17,6 +17,28 @@ export interface Zone {
 }
 
 const ZONE_TEMPLATES: Omit<Zone, "index">[] = [
+  /*
+   * Açılış aktı KASITLI olarak normal temalı.
+   *
+   * Eskiden burası grass temalıydı ve koşuyu çark tek başına belirliyordu:
+   * grass'a ateş 2x vurup 0.5x yiyor, su ise tam tersini yaşıyordu. Ölçüm
+   * (act 1, evrimleşmemiş starter, 60 örnek/tür): ateş %94, çimen %88, su %71.
+   * Oyuncunun hiçbir seçimi yokken 23 puanlık bir uçurum.
+   *
+   * Normal tip grass/fire/water üçlüsünün hiçbirine karşı avantajlı ya da
+   * dezavantajlı değil — üçü de aynı koşulda başlıyor. Üstelik mainline'ın
+   * ilk route'u da tam olarak bu: Pidgey, Rattata, Sentret, Bidoof.
+   *
+   * Üçgenin kendisi kaybolmuyor, sadece açılıştan sonraya taşınıyor: grass
+   * 2., water 3., fire 5. akt. O noktada oyuncunun takımı, eşyası ve relikleri
+   * var — tip duvarına verecek bir cevabı var.
+   */
+  {
+    name: "Wayfarer's Meadow",
+    theme: "normal",
+    description: "Ordinary little things scurry along the first road.",
+    color: "#8a8f6a",
+  },
   {
     name: "Verdant Trail",
     theme: "grass",

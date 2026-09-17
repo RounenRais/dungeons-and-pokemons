@@ -15,6 +15,10 @@ interface RunOverProps {
   bestLevel: number;
   bossesDefeated: number;
   records: RunRecords;
+  /** Koşuya verilen ad; null ise oyuncu ad sormayı atlamıştı. */
+  leaderboardName: string | null;
+  /** Koşu skor tablosunun ilk onuna girdi mi? */
+  madeLeaderboard: boolean;
   onRestart: () => void;
 }
 
@@ -23,6 +27,8 @@ export function RunOver({
   bestLevel,
   bossesDefeated,
   records,
+  leaderboardName,
+  madeLeaderboard,
   onRestart,
 }: RunOverProps) {
   const isBestRun = depth >= records.bestDistance;
@@ -54,6 +60,16 @@ export function RunOver({
             A new personal best.
           </p>
         )}
+
+        {/* Skor tablosunun durumu: atlandıysa bunu açıkça söyle, yoksa oyuncu
+            skorunun neden listede olmadığını anlamıyor. */}
+        <p className="mt-3 text-sm text-[var(--ink-soft)]">
+          {leaderboardName === null
+            ? "You skipped the name, so this run was not added to the leaderboard."
+            : madeLeaderboard
+              ? `Recorded on the leaderboard as ${leaderboardName}.`
+              : `Not deep enough for the leaderboard this time, ${leaderboardName}.`}
+        </p>
 
         <p className="mt-5 text-xs text-[var(--ink-faint)]">
           Next run starts with one Revive again. Buy more at any shop — they are

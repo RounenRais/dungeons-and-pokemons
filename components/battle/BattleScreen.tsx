@@ -15,6 +15,7 @@ import {
   executeTurn,
   getEventDelay,
   getUsableMoves,
+  getVolatileBadges,
   syncMemberFromCombatant,
   STRUGGLE,
   TERRAIN_LABELS,
@@ -497,6 +498,7 @@ export function BattleScreen({
             maxHp={battle.enemy.maxHp}
             status={view.enemyStatus}
             isConfused={view.enemyConfused}
+            badges={getVolatileBadges(battle.enemy)}
             showDetails={false}
           />
         </div>
@@ -548,6 +550,7 @@ export function BattleScreen({
             maxHp={battle.player.maxHp}
             status={view.playerStatus}
             isConfused={view.playerConfused}
+            badges={getVolatileBadges(battle.player)}
             showDetails
             xpRatio={xpRatio}
           />

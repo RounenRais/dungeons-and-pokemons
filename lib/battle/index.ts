@@ -16,6 +16,7 @@ export {
   createCombatant,
   executeTurn,
   getEffectiveSpeed,
+  getMoveRestriction,
   getUsableMoves,
   startBattle,
   syncMemberFromCombatant,
@@ -58,4 +59,5 @@ export {
   type MoveTrait,
 } from "./moveTraits";
 export { createVolatileState, type VolatileState } from "./volatile";
+export { getVolatileBadges, type VolatileBadge } from "./badges";
 export type * from "./types";

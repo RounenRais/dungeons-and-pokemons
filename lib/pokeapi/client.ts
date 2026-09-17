@@ -150,6 +150,27 @@ export function getSpecies(idOrName: string | number): Promise<PokemonSpecies> {
   );
 }
 
+/**
+ * Bir TÜR adından oynanabilir formu getirir.
+ *
+ * `/pokemon/{ad}` çoğu türde çalışır ama bazılarında tür adı bir form adı
+ * DEĞİLDİR: Oinkologne'un formları `oinkologne-male` ve `oinkologne-female`,
+ * `/pokemon/oinkologne` 404 döner. Evrim zinciri tür adı verdiği için
+ * (Lechonk → oinkologne) bu, evrim anında koşuyu patlatan bir çökmeydi.
+ */
+export async function getPokemonForSpecies(
+  speciesName: string,
+): Promise<Pokemon> {
+  try {
+    return await getPokemon(speciesName);
+  } catch (error) {
+    if (!(error instanceof PokeApiError) || error.status !== 404) throw error;
+    const [defaultVariety] = (await getSpecies(speciesName)).varieties;
+    if (defaultVariety === undefined) throw error;
+    return getPokemon(defaultVariety);
+  }
+}
+
 /** `/evolution-chain/{id}` — düzleştirilmiş evrim adımları. */
 export function getEvolutionChain(id: number): Promise<EvolutionChain> {
   return getResource<RawEvolutionChain, EvolutionChain>(

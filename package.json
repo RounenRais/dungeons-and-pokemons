@@ -26,7 +26,8 @@
     "check:guide": "npx --yes tsx scripts/check-guide.mts",
     "check:events": "npx --yes tsx scripts/check-events.mts",
     "smoke:boss": "npx --yes tsx scripts/smoke-boss.mts",
-    "smoke:moves": "npx --yes tsx scripts/smoke-moves.mts"
+    "smoke:moves": "npx --yes tsx scripts/smoke-moves.mts",
+    "smoke:leaderboard": "npx --yes tsx scripts/smoke-leaderboard.mts"
   },
   "dependencies": {
     "framer-motion": "^13.2.0",

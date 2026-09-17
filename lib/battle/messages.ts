@@ -28,7 +28,9 @@ export function describeEvent(
       return null;
 
     case "message":
-      return event.text;
+      return event.side === undefined
+        ? event.text
+        : `${nameOf(event.side, names)} ${event.text}`;
 
     case "move-used":
       return `${nameOf(event.side, names)} used ${event.move.displayName}!`;

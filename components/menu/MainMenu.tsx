@@ -11,10 +11,15 @@ import { GameIcon } from "@/components/icons/GameIcons";
 import { DiscordIcon } from "@/components/icons/DiscordIcon";
 import { getStarterSpriteUrl, STARTERS } from "@/lib/data/starters";
 import { RecordsPanel } from "@/components/RecordsPanel";
+import { Leaderboard } from "@/components/menu/Leaderboard";
+import type { LeaderboardEntry } from "@/lib/game/leaderboard";
 import type { RunRecords } from "@/lib/store/gameStore";
 
 interface MainMenuProps {
   records: RunRecords;
+  leaderboard: LeaderboardEntry[];
+  /** Az önce biten koşunun tablodaki satırı — varsa vurgulanıyor. */
+  highlightId?: string | null;
   onPlay: () => void;
   onHowToPlay: () => void;
 }
@@ -28,9 +33,15 @@ const SUPPORT_URL = "https://www.patreon.com/c/rounenrais/membership";
 /** Topluluk sunucusu. */
 const DISCORD_URL = "https://discord.gg/e3ey2GxD9";
 
-export function MainMenu({ records, onPlay, onHowToPlay }: MainMenuProps) {
+export function MainMenu({
+  records,
+  leaderboard,
+  highlightId = null,
+  onPlay,
+  onHowToPlay,
+}: MainMenuProps) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center px-4 py-10">
+    <div className="relative flex flex-1 flex-col items-center justify-center px-4 py-10">
       <motion.div
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
@@ -106,6 +117,16 @@ export function MainMenu({ records, onPlay, onHowToPlay }: MainMenuProps) {
 
       <div className="mt-6">
         <RecordsPanel records={records} />
+      </div>
+
+      {/*
+        Skor tablosu sağ kenarda. `absolute` olması şart: akışa girerse menü
+        kartını ortadan kaydırıyor. Sadece kartla çakışmayacak kadar geniş
+        ekranlarda (xl) sağa geçiyor; altında kalan genişliklerde rekorların
+        altına, akışın içine iniyor.
+      */}
+      <div className="mt-4 xl:absolute xl:right-6 xl:top-1/2 xl:mt-0 xl:-translate-y-1/2">
+        <Leaderboard entries={leaderboard} highlightId={highlightId} />
       </div>
     </div>
   );

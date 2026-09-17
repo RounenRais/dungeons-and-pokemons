@@ -12,6 +12,7 @@ import {
 import { STARTERS } from '../lib/data/starters';
 import { getBstRange, createWildEnemy, getEnemyIv, getEnemySkill, getLevelBonus, getMovesetQuality, type EncounterKind } from '../lib/game/enemy';
 import { createTeamMember } from '../lib/game/team';
+import { evolveToLevel } from '../lib/game/progression';
 import { getMoves, getPokemon, selectStartingMoveIds } from '../lib/pokeapi';
 import type { Combatant } from '../lib/battle';
 import type { Move } from '../lib/types';
@@ -58,7 +59,12 @@ async function simulateTile(tileIndex: number, playerLevel: number, kind: Encoun
 
   for (let i = 0; i < SAMPLES_PER_TILE; i += 1) {
     const starter = STARTERS[i % STARTERS.length];
-    const pokemon = await getPokemon(starter.name);
+    const base = await getPokemon(starter.name);
+    // Gerçek bir oyuncu bu level'a gelene kadar evrimleşmiş olurdu; ölçüm de
+    // öyle olsun, yoksa test oyunu değil hiç evrimleşmeyen bir kurguyu ölçer.
+    const seed = createTeamMember(base, { level: playerLevel, moves: [], isShiny: false });
+    const grown = await evolveToLevel(seed, base);
+    const pokemon = grown.pokemon;
     const moves = await getMoves(selectStartingMoveIds(pokemon, playerLevel));
     const member = createTeamMember(pokemon, { level: playerLevel, moves, isShiny: false });
     const enemy = await createWildEnemy(tileIndex, {

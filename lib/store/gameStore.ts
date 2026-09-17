@@ -149,8 +149,17 @@ interface GameState {
   records: RunRecords;
   /** Kayıt localStorage'dan okunana kadar false — SSR uyumsuzluğunu önler. */
   hydrated: boolean;
+  /**
+   * Bu koşuyu skor tablosuna yazarken kullanılacak ad.
+   *
+   * null = oyuncu ad sormayı ATLADI; koşu bittiğinde tabloya hiçbir şey
+   * yazılmaz. Ad koşu başına soruluyor, koşu boyunca sabit kalıyor.
+   */
+  playerName: string | null;
 
   newGame: () => void;
+  /** Koşu başlamadan önce adı (ya da atlandığını) kaydeder. */
+  setPlayerName: (name: string | null) => void;
   /** Revive sayısı; 0 ise yenilgi koşuyu bitirir. */
   countRevives: () => number;
   startWithStarter: (pokemon: Pokemon, member: TeamMember) => void;
@@ -214,6 +223,9 @@ export const useGameStore = create<GameState>()(
       pendingRelics: null,
       records: createEmptyRecords(),
       hydrated: false,
+      playerName: null,
+
+      setPlayerName: (playerName) => set({ playerName }),
 
       newGame: () => {
         logCounter = 0;
@@ -235,6 +247,7 @@ export const useGameStore = create<GameState>()(
           winStreak: 0,
           bossesDefeated: 0,
           pendingRelics: null,
+          playerName: null,
         });
       },
 
@@ -589,6 +602,7 @@ export const useGameStore = create<GameState>()(
         winStreak: state.winStreak,
         bossesDefeated: state.bossesDefeated,
         records: state.records,
+        playerName: state.playerName,
       }),
       onRehydrateStorage: () => (state) => {
         // Log id sayacını kayıttaki en büyük id'nin üstüne taşı ki

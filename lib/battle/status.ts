@@ -160,4 +160,7 @@ export const BLOCK_MESSAGES: Record<BlockReason, string> = {
   "no-pp": "has no moves left!",
   recharge: "must recharge!",
   infatuation: "is immobilised by love!",
+  taunt: "can't get a status move off after the taunt!",
+  disabled: "can't use that move — it is disabled!",
+  torment: "can't use the same move twice in a row!",
 };

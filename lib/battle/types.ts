@@ -81,7 +81,10 @@ export type BlockReason =
   | "confusion"
   | "no-pp"
   | "recharge"
-  | "infatuation";
+  | "infatuation"
+  | "taunt"
+  | "disabled"
+  | "torment";
 
 /**
  * Motorun ürettiği olaylar. UI bunları sırayla oynatır:
@@ -89,7 +92,11 @@ export type BlockReason =
  */
 export type BattleEvent =
   | { kind: "turn-start"; turn: number }
-  | { kind: "message"; text: string }
+  /**
+   * Serbest metin. `side` verilirse UI metnin başına o Pokémon'un adını
+   * koyar — "It fell for the taunt!" kimin düştüğünü söylemiyordu.
+   */
+  | { kind: "message"; text: string; side?: Side }
   | {
       kind: "move-used";
       side: Side;

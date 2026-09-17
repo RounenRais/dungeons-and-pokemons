@@ -17,7 +17,7 @@ import {
   findAutomaticEvolution,
   getEvolutionChain,
   getMoves,
-  getPokemon,
+  getPokemonForSpecies,
   getSpecies,
 } from "@/lib/pokeapi";
 import type { BaseStats, Move, Pokemon, TeamMember } from "@/lib/types";
@@ -117,6 +117,23 @@ async function buildCatchTarget(
 }
 
 /**
+ * Bir üyeyi bulunduğu level'da hak ettiği forma kadar evrimleştirir.
+ *
+ * Denge ölçümü için dışarı açık (scripts/smoke-balance.mts): simülasyondaki
+ * oyuncu evrimleşmezse ölçtüğü şey oyun değil, bir kurgu olur — başlangıç
+ * havuzu ilk route Pokémon'larına geçince (BST 180-300) hiç evrimleşmeyen bir
+ * oyuncu 35. karede zaten umutsuz durumda oluyor, oysa gerçek bir koşuda
+ * Caterpie level 10'da çoktan Butterfree.
+ */
+export async function evolveToLevel(
+  member: TeamMember,
+  pokemon: Pokemon,
+): Promise<{ member: TeamMember; pokemon: Pokemon }> {
+  const result = await applyAutomaticEvolutions(member, pokemon);
+  return { member: result.member, pokemon: result.pokemon };
+}
+
+/**
  * Level atlarken tetiklenen otomatik evrimleri uygular.
  * Zincirleme evrim de mümkün (tek seferde iki level eşiği geçilirse).
  */
@@ -146,7 +163,7 @@ async function applyAutomaticEvolutions(
     );
     if (next === null) break;
 
-    const evolvedPokemon = await getPokemon(next.toSpeciesName);
+    const evolvedPokemon = await getPokemonForSpecies(next.toSpeciesName);
     const evolvedSpecies = await getSpecies(evolvedPokemon.speciesId);
 
     const newMaxHp = calculateMaxHp(

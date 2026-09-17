@@ -60,8 +60,14 @@ export interface BstRange {
   max: number;
 }
 
-/** Tahtada ilerledikçe düşmanların oyuncuya göre kazandığı ek güç. */
-const TILE_POWER_DRIFT = 1.6;
+/**
+ * Tahtada ilerledikçe düşmanların oyuncuya göre kazandığı ek güç — oyuncunun
+ * BST'sinin oranı olarak (kare başına ~%0.5).
+ */
+const TILE_POWER_DRIFT = 0.0045;
+
+/** Aralığın alt ucu: bunun altında zaten neredeyse hiç tür yok. */
+const BST_FLOOR = 150;
 
 /**
  * Düşmanın güç (BST) aralığı — **oyuncunun kendi gücüne** göre belirlenir.
@@ -69,29 +75,44 @@ const TILE_POWER_DRIFT = 1.6;
  * Aralığı kareye sabitlemek, oyuncu evrimleşmediğinde onu geride bırakıyordu.
  * Oyuncunun BST'sini merkez almak, evrimleşse de evrimleşmese de rakiplerin
  * "yakın" kalmasını garanti eder; kare indeksi sadece yavaş bir baskı ekler.
+ *
+ * Sınırlar mutlak BST puanı değil, oyuncunun BST'sinin ORANI. Eskiden "oyuncu
+ * - 45" gibi sabit puanlardı ve ~310 BST'lik bir starter'a göre ayarlanmıştı;
+ * boss'tan yakalanan bir Pokémon'la (BST 200 de olabilir 600 de) savaşa
+ * girince aynı 45 puan bambaşka anlamlara geliyordu. Oran olarak yazınca
+ * takımdaki her Pokémon kendi ölçeğinde aynı zorlukla karşılaşıyor.
  */
 export function getBstRange(
   playerBst: number,
   tileIndex: number,
   kind: EncounterKind = "wild",
 ): BstRange {
-  const center = playerBst + Math.round(tileIndex * TILE_POWER_DRIFT);
+  const drift = tileIndex * TILE_POWER_DRIFT;
   const progress = getRunProgress(tileIndex);
+  const scale = (ratio: number) =>
+    Math.max(BST_FLOOR, Math.round(playerBst * (ratio + drift)));
 
   // Boss'un üstünlüğü BST'den değil level + akıl + hareket setinden geliyor.
   // Üçü birden BST'yi de yukarı çekince ortaya kazanılamayan bir şey çıkıyordu
   // (ölçüm: %2 kazanma); tür olarak biraz altta kalması dengeyi geri getirdi.
   if (kind === "boss") {
     return {
-      min: Math.max(150, center - 120),
-      max: center - 40 + Math.round(40 * progress),
+      min: scale(0.7),
+      max: scale(0.92 + 0.13 * progress),
     };
   }
   if (kind === "elite") {
-    return { min: Math.max(150, center - 110), max: center - 10 };
+    return { min: scale(0.78), max: scale(1.0) };
   }
-  // Normal düşmanlar oyuncunun altında: 1v1'de oyuncu belirgin biçimde avantajlı.
-  return { min: Math.max(150, center - 160), max: center - 45 };
+  // Normal düşmanlar oyuncunun altında: 1v1'de oyuncu belirgin biçimde
+  // avantajlı. Tavan derinlik ne olursa olsun oyuncunun altında kalıyor —
+  // kare sürüklenmesi bunu aşarsa rutin savaşlar oyuncudan güçlü rakiplere
+  // dönüşüyor ve koşunun son yarısı sürekli bıçak sırtına biniyor. Derinliğin
+  // zorluğu BST'den değil level, IV, hareket seti ve AI ustalığından gelsin.
+  return {
+    min: scale(0.78),
+    max: Math.min(scale(0.93), Math.round(playerBst * 0.95)),
+  };
 }
 
 /**
