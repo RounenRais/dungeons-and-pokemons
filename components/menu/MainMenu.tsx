@@ -12,12 +12,17 @@ import { DiscordIcon } from "@/components/icons/DiscordIcon";
 import { getStarterSpriteUrl, STARTERS } from "@/lib/data/starters";
 import { RecordsPanel } from "@/components/RecordsPanel";
 import { Leaderboard } from "@/components/menu/Leaderboard";
-import type { LeaderboardEntry } from "@/lib/game/leaderboard";
+import type {
+  LeaderboardEntry,
+  LeaderboardSource,
+} from "@/lib/game/leaderboard";
 import type { RunRecords } from "@/lib/store/gameStore";
 
 interface MainMenuProps {
   records: RunRecords;
   leaderboard: LeaderboardEntry[];
+  /** Tablo paylaşılan sunucudan mı, sadece bu cihazdan mı geliyor? */
+  leaderboardSource: LeaderboardSource;
   /** Az önce biten koşunun tablodaki satırı — varsa vurgulanıyor. */
   highlightId?: string | null;
   onPlay: () => void;
@@ -36,6 +41,7 @@ const DISCORD_URL = "https://discord.gg/e3ey2GxD9";
 export function MainMenu({
   records,
   leaderboard,
+  leaderboardSource,
   highlightId = null,
   onPlay,
   onHowToPlay,
@@ -126,7 +132,11 @@ export function MainMenu({
         altına, akışın içine iniyor.
       */}
       <div className="mt-4 xl:absolute xl:right-6 xl:top-1/2 xl:mt-0 xl:-translate-y-1/2">
-        <Leaderboard entries={leaderboard} highlightId={highlightId} />
+        <Leaderboard
+          entries={leaderboard}
+          source={leaderboardSource}
+          highlightId={highlightId}
+        />
       </div>
     </div>
   );

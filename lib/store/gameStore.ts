@@ -22,9 +22,39 @@ import {
   MAP_ROWS,
   type GameMap,
 } from "@/lib/game/map";
+import { SPINS_PER_VISIT } from "@/lib/data/casinoSymbols";
+import { resolveSpin, validateBet, type ResolvedSpin } from "@/lib/game/casino";
+import {
+  canEnterCasino,
+  createCasinoState,
+  getCasinoGame,
+  clampGold,
+  type CasinoState,
+} from "@/lib/game/casinoState";
+import {
+  canDouble,
+  dealHand,
+  doubleDown,
+  hit as hitHand,
+  stand as standHand,
+  type BlackjackHand,
+} from "@/lib/game/blackjack";
 import { healTeamMembers, MAX_TEAM_SIZE } from "@/lib/game/team";
 import { createSeed } from "@/lib/game/rng";
-import type { Player, Pokemon, TeamMember } from "@/lib/types";
+import type { StoryContext } from "@/lib/story/context";
+import {
+  createStoryState,
+  CORRUPTION_MAX,
+  RELATIONSHIP_MAX,
+  RELATIONSHIP_MIN,
+  REPUTATION_MAX,
+  REPUTATION_MIN,
+  type EventHistoryEntry,
+  type ResolvedCheck,
+  type StoryFlagValue,
+  type StoryState,
+} from "@/lib/story/types";
+import type { Player, Pokemon, PokemonType, TeamMember } from "@/lib/types";
 
 export type GamePhase = "wheel" | "board" | "battle" | "gameover";
 
@@ -54,8 +84,19 @@ const SAVE_KEY = "pokerun:save";
  * gerektirmedi; eski kayıtta bu alanlar yok, zustand başlangıç değerlerini
  * (null / 0) bırakıyor ve ilk yenilgi seni act'in başına gönderiyor. Sürümü
  * artırmak devam eden koşuları boşuna silerdi.
+ *
+ * v8 hikâye katmanını ekledi (bayraklar, yozlaşma/itibar/borç, ilişkiler,
+ * dondurulmuş zar sonuçları). Eski kayıtlarda bu blok hiç yok; `migrate` onu
+ * boş bir hikâye durumuyla dolduruyor — devam eden koşu silinmiyor, sadece
+ * hikâye sayaçları sıfırdan başlıyor.
+ *
+ * v9 kumarhaneyi ekledi (ziyaret geçmişi + açık oturumun çözülmüş
+ * çevirmeleri). Yine sadece yeni bir blok; devam eden koşu korunuyor ve
+ * kumarhane hiç kullanılmamış sayılıyor. Eski kayıttaki harita CASINO düğümü
+ * içermiyor — harita kayda yazıldığı için yeniden üretilmiyor, yani o koşu
+ * kumarhanesiz devam ediyor, bir sonraki act'ten itibaren çıkmaya başlıyor.
  */
-export const SAVE_VERSION = 7;
+export const SAVE_VERSION = 10;
 
 /**
  * Yenilginin sonucu. Çağıran taraf (sayfa) buna bakarak doğru günlük
@@ -147,6 +188,13 @@ interface GameState {
   pendingRelics: RelicId[] | null;
   /** Koşular arası kalan rekorlar. */
   records: RunRecords;
+  /**
+   * Bu koşunun hikâye durumu: bayraklar, sayaçlar, ilişkiler ve atılmış
+   * zarlar. Koşuya ait — yeni oyunda sıfırlanır, rekorlar gibi kalıcı değil.
+   */
+  story: StoryState;
+  /** Kumarhane ziyaretleri ve açık oturum. */
+  casino: CasinoState;
   /** Kayıt localStorage'dan okunana kadar false — SSR uyumsuzluğunu önler. */
   hydrated: boolean;
   /**
@@ -156,8 +204,18 @@ interface GameState {
    * yazılmaz. Ad koşu başına soruluyor, koşu boyunca sabit kalıyor.
    */
   playerName: string | null;
+  /**
+   * EXP Share açık mı?
+   *
+   * Açıkken savaşa girmeyen takım üyeleri de yarım pay XP alır. Bir koşu
+   * ayarı değil bir OYUNCU tercihi: yeni koşuda sıfırlanmıyor, kayıtta
+   * saklanıyor. Kapatılabilir olması isteniyordu — sahadaki Pokémon'u
+   * bilerek hızlı büyütmek isteyen bir oyuncu payı vermemeyi seçebilir.
+   */
+  expShare: boolean;
 
   newGame: () => void;
+  setExpShare: (enabled: boolean) => void;
   /** Koşu başlamadan önce adı (ya da atlandığını) kaydeder. */
   setPlayerName: (name: string | null) => void;
   /** Revive sayısı; 0 ise yenilgi koşuyu bitirir. */
@@ -198,6 +256,183 @@ interface GameState {
   registerWin: (isBoss: boolean) => void;
   /** Koşuyu rekorlara işler (yenilgi ya da yeni oyun öncesi). */
   commitRecords: () => void;
+
+  // --- Hikâye ------------------------------------------------------------
+  /**
+   * Atılmış bir d20 sonucunu kayda yazar.
+   *
+   * Bu çağrı animasyondan ÖNCE yapılıyor: zustand persist her `set` sonrası
+   * localStorage'a senkron yazdığı için, zar ekranda dönmeye başlamadan
+   * kalıcı hâle geliyor. Aynı anahtar ikinci kez geldiğinde ilk sonuç
+   * korunuyor — sayfayı yenileyip yeniden atmak mümkün değil.
+   */
+  recordCheck: (result: ResolvedCheck) => void;
+  /** Hikâye sayaçlarını ve bayraklarını günceller (hepsi göreli/delta). */
+  applyStoryEffects: (effects: StoryEffects) => void;
+  /** Bir olayı geçmişe yazar ve gerekiyorsa bir daha çıkmayacak şekilde kapatır. */
+  completeStoryEvent: (entry: EventHistoryEntry, close: boolean) => void;
+  /** İçinde bulunulan hikâye yayını değiştirir. */
+  setStoryArc: (arc: string) => void;
+
+  // --- Kumarhane ---------------------------------------------------------
+  /** Kumarhaneyi açar. Bu act'te zaten kullanıldıysa false döner. */
+  openCasino: (nodeId: string) => boolean;
+  /**
+   * Bir çevirme oynar.
+   *
+   * Doğrulama, zar, altın hareketi ve kaydın hepsi TEK bir `set` içinde
+   * yapılıyor. Bunun iki sonucu var: (1) hızlı çift tıklama iki kez ödeme
+   * yapamıyor, çünkü ikinci çağrı ilkinin artırdığı çevirme sayısını görüyor;
+   * (2) sonuç animasyon başlamadan önce kalıcı hâle geliyor.
+   */
+  playSpin: (rawBet: unknown, rawLines?: unknown) => SpinAttempt;
+  /**
+   * Blackjack masasında yeni bir el dağıtır.
+   *
+   * Deste el başlarken karıştırılıp kayda yazılıyor; sonraki kararlar sadece
+   * imleci ilerletiyor (bkz. lib/game/blackjack.ts).
+   */
+  dealBlackjack: (rawBet: unknown) => HandAttempt;
+  /** Süren elde kart çeker. */
+  hitBlackjack: () => void;
+  /** Süren elde durur; krupiye oynar ve el kapanır. */
+  standBlackjack: () => void;
+  /** Bahsi ikiye katlar, tek kart alır ve durur. */
+  doubleBlackjack: () => HandAttempt;
+  /**
+   * Jackpot ödülünü verir ve verildiğini KAYDA işler.
+   *
+   * Aynı çevirme için ikinci çağrı hiçbir şey yapmıyor; sayfayı yenileyip
+   * ödülü tekrar almak da bu yüzden mümkün değil. `true` dönerse ödül bu
+   * çağrıda verildi (arayüz günlüğe yazar).
+   */
+  claimCasinoJackpot: (spinIndex: number) => boolean;
+  /** Kumarhaneden ayrılır. */
+  leaveCasino: () => void;
+}
+
+/** `playSpin` sonucu. Reddedilen bahis oyuncuya gösterilecek sebeple döner. */
+export type SpinAttempt =
+  | { ok: true; spin: ResolvedSpin }
+  | { ok: false; reason: string };
+
+/** `dealBlackjack` / `doubleBlackjack` sonucu. */
+export type HandAttempt =
+  | { ok: true; hand: BlackjackHand }
+  | { ok: false; reason: string };
+
+/** `applyStoryEffects` için delta paketi. Verilmeyen alan değişmez. */
+export interface StoryEffects {
+  corruption?: number;
+  reputation?: number;
+  debt?: number;
+  relationship?: Readonly<Record<string, number>>;
+  setFlags?: Readonly<Record<string, StoryFlagValue>>;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Kayıttan okunan (belki eksik, belki hiç olmayan) hikâye bloğunu tam bir
+ * `StoryState`e tamamlar. Göç yolu ve savunma hattı aynı fonksiyon: her alan
+ * tek tek kontrol ediliyor, tipi tutmayan alan varsayılana düşüyor.
+ */
+function mergeStoryState(stored: unknown): StoryState {
+  const base = createStoryState();
+  if (stored === null || typeof stored !== "object") return base;
+  const partial = stored as Partial<StoryState>;
+
+  return {
+    storyFlags: isPlainObject(partial.storyFlags)
+      ? (partial.storyFlags as StoryState["storyFlags"])
+      : base.storyFlags,
+    completedEvents: Array.isArray(partial.completedEvents)
+      ? partial.completedEvents
+      : base.completedEvents,
+    currentArc:
+      typeof partial.currentArc === "string"
+        ? partial.currentArc
+        : base.currentArc,
+    corruption:
+      typeof partial.corruption === "number"
+        ? clamp(partial.corruption, 0, CORRUPTION_MAX)
+        : base.corruption,
+    reputation:
+      typeof partial.reputation === "number"
+        ? clamp(partial.reputation, REPUTATION_MIN, REPUTATION_MAX)
+        : base.reputation,
+    debt: typeof partial.debt === "number" ? Math.max(0, partial.debt) : base.debt,
+    trainerRelationships: isPlainObject(partial.trainerRelationships)
+      ? (partial.trainerRelationships as StoryState["trainerRelationships"])
+      : base.trainerRelationships,
+    // Atılmış zarlar özellikle korunuyor: göç sırasında düşürülürse yarım
+    // kalmış bir kontrol yeniden atılabilir hâle gelirdi.
+    resolvedChecks: isPlainObject(partial.resolvedChecks)
+      ? (partial.resolvedChecks as StoryState["resolvedChecks"])
+      : base.resolvedChecks,
+    eventHistory: Array.isArray(partial.eventHistory)
+      ? partial.eventHistory
+      : base.eventHistory,
+  };
+}
+
+/**
+ * Kayıttan okunan kumarhane bloğunu tam bir `CasinoState`e tamamlar.
+ *
+ * Oturumun kendisi de doğrulanıyor: çevirme listesi bir dizi değilse ya da
+ * hak sayısını aşıyorsa oturum düşürülüyor. Bozuk bir oturumu geri yüklemek,
+ * oyuncuya bedava çevirme ya da negatif hak vermek anlamına gelirdi.
+ */
+function mergeCasinoState(stored: unknown): CasinoState {
+  const base = createCasinoState();
+  if (!isPlainObject(stored)) return base;
+  const partial = stored as Partial<CasinoState>;
+
+  const usedActs = Array.isArray(partial.usedActs)
+    ? partial.usedActs.filter((value) => Number.isInteger(value))
+    : base.usedActs;
+  const usedNodeIds = Array.isArray(partial.usedNodeIds)
+    ? partial.usedNodeIds.filter((value) => typeof value === "string")
+    : base.usedNodeIds;
+
+  let session = base.session;
+  const storedSession = partial.session;
+  if (
+    isPlainObject(storedSession) &&
+    typeof storedSession.nodeId === "string" &&
+    Number.isInteger(storedSession.act) &&
+    Array.isArray(storedSession.spins) &&
+    storedSession.spins.length <= SPINS_PER_VISIT
+  ) {
+    // Masa türü ve el listesi sonradan eklendi: eksikse düğümden türetip
+    // boş bir liste takıyoruz, yoksa yarıda kalmış bir oturum ekranı
+    // `undefined.length` ile patlatır.
+    const hands = Array.isArray(storedSession.hands)
+      ? (storedSession.hands as BlackjackHand[]).slice(0, SPINS_PER_VISIT)
+      : [];
+    const claimedJackpots = Array.isArray(storedSession.claimedJackpots)
+      ? storedSession.claimedJackpots.filter((value) => Number.isInteger(value))
+      : [];
+    const game =
+      storedSession.game === "blackjack" || storedSession.game === "slots"
+        ? storedSession.game
+        : getCasinoGame(storedSession.nodeId);
+
+    session = {
+      ...(storedSession as unknown as NonNullable<CasinoState["session"]>),
+      game,
+      hands,
+      claimedJackpots,
+    };
+  }
+
+  return { usedActs, usedNodeIds, session };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 let logCounter = 0;
@@ -222,10 +457,14 @@ export const useGameStore = create<GameState>()(
       bossesDefeated: 0,
       pendingRelics: null,
       records: createEmptyRecords(),
+      story: createStoryState(),
+      casino: createCasinoState(),
       hydrated: false,
       playerName: null,
+      expShare: true,
 
       setPlayerName: (playerName) => set({ playerName }),
+      setExpShare: (expShare) => set({ expShare }),
 
       newGame: () => {
         logCounter = 0;
@@ -247,6 +486,8 @@ export const useGameStore = create<GameState>()(
           winStreak: 0,
           bossesDefeated: 0,
           pendingRelics: null,
+          story: createStoryState(),
+          casino: createCasinoState(),
           playerName: null,
         });
       },
@@ -265,6 +506,8 @@ export const useGameStore = create<GameState>()(
           winStreak: 0,
           bossesDefeated: 0,
           pendingRelics: null,
+          story: createStoryState(),
+          casino: createCasinoState(),
           player: { ...createEmptyPlayer(), team: [member] },
           pokedex: { [pokemon.id]: pokemon },
           battle: null,
@@ -554,6 +797,333 @@ export const useGameStore = create<GameState>()(
           };
         }),
 
+      // --- Hikâye ---------------------------------------------------------
+
+      recordCheck: (result) =>
+        set((state) => {
+          // İlk sonuç kazanır. Aynı anahtar ikinci kez gelirse — sayfa
+          // yenilenip akış baştan çalışsa bile — kayıttaki zar korunuyor.
+          if (state.story.resolvedChecks[result.key] !== undefined) {
+            return state;
+          }
+          return {
+            story: {
+              ...state.story,
+              resolvedChecks: {
+                ...state.story.resolvedChecks,
+                [result.key]: result,
+              },
+            },
+          };
+        }),
+
+      applyStoryEffects: (effects) =>
+        set((state) => {
+          const story = state.story;
+
+          const relationships = { ...story.trainerRelationships };
+          for (const [trainerId, delta] of Object.entries(
+            effects.relationship ?? {},
+          )) {
+            relationships[trainerId] = clamp(
+              (relationships[trainerId] ?? 0) + delta,
+              RELATIONSHIP_MIN,
+              RELATIONSHIP_MAX,
+            );
+          }
+
+          return {
+            story: {
+              ...story,
+              corruption: clamp(
+                story.corruption + (effects.corruption ?? 0),
+                0,
+                CORRUPTION_MAX,
+              ),
+              reputation: clamp(
+                story.reputation + (effects.reputation ?? 0),
+                REPUTATION_MIN,
+                REPUTATION_MAX,
+              ),
+              // Borç negatife düşmez; fazla ödeme yutulur.
+              debt: Math.max(0, story.debt + (effects.debt ?? 0)),
+              trainerRelationships: relationships,
+              storyFlags: { ...story.storyFlags, ...effects.setFlags },
+            },
+          };
+        }),
+
+      completeStoryEvent: (entry, close) =>
+        set((state) => {
+          const story = state.story;
+          const alreadyClosed = story.completedEvents.includes(entry.eventId);
+          return {
+            story: {
+              ...story,
+              eventHistory: [...story.eventHistory, entry],
+              completedEvents:
+                close && !alreadyClosed
+                  ? [...story.completedEvents, entry.eventId]
+                  : story.completedEvents,
+            },
+          };
+        }),
+
+      setStoryArc: (arc) =>
+        set((state) => ({ story: { ...state.story, currentArc: arc } })),
+
+      // --- Kumarhane ------------------------------------------------------
+
+      openCasino: (nodeId) => {
+        let opened = false;
+        set((state) => {
+          if (!canEnterCasino(state.casino, state.act, nodeId)) return state;
+
+          // Zaten açık bir oturum varsa (sayfa yenilendi) onu koru.
+          if (state.casino.session?.nodeId === nodeId) {
+            opened = true;
+            return state;
+          }
+
+          opened = true;
+          return {
+            casino: {
+              // Act ve düğüm giriş anında işaretleniyor: yenileyip yeni bir
+              // ziyaret kazanmak mümkün olmasın.
+              usedActs: state.casino.usedActs.includes(state.act)
+                ? state.casino.usedActs
+                : [...state.casino.usedActs, state.act],
+              usedNodeIds: state.casino.usedNodeIds.includes(nodeId)
+                ? state.casino.usedNodeIds
+                : [...state.casino.usedNodeIds, nodeId],
+              // Masa türü düğümden türetiliyor: ekranı kapatıp açmak hangi
+              // oyunun kurulu olduğunu değiştirmesin.
+              session: {
+                nodeId,
+                act: state.act,
+                game: getCasinoGame(nodeId),
+                spins: [],
+                hands: [],
+                claimedJackpots: [],
+              },
+            },
+          };
+        });
+        return opened;
+      },
+
+      playSpin: (rawBet, rawLines = 1) => {
+        let result: SpinAttempt = {
+          ok: false,
+          reason: "The machine is not taking bets.",
+        };
+
+        set((state) => {
+          const session = state.casino.session;
+          if (session === null) return state;
+
+          // Hakkı bitmiş bir oturum bir daha oynayamaz. Çift tıklamayı da
+          // bu satır kesiyor: ilk çağrı listeyi uzatıyor, ikincisi görüyor.
+          if (session.spins.length >= SPINS_PER_VISIT) {
+            result = { ok: false, reason: "No spins left." };
+            return state;
+          }
+
+          // Doğrulama hat sayısını da biliyor: ödenecek olan hat başına bahis
+          // değil hepsinin toplamı, ve bakiye kontrolü o toplam üzerinden.
+          const check = validateBet(rawBet, state.player.gold, rawLines);
+          if (!check.ok) {
+            result = { ok: false, reason: check.message ?? "Invalid bet." };
+            return state;
+          }
+
+          const spin = resolveSpin(
+            session.spins.length,
+            check.bet,
+            check.lines,
+          );
+          result = { ok: true, spin };
+
+          return {
+            player: {
+              ...state.player,
+              gold: clampGold(state.player.gold - spin.stake + spin.payout),
+            },
+            casino: {
+              ...state.casino,
+              session: { ...session, spins: [...session.spins, spin] },
+            },
+          };
+        });
+
+        return result;
+      },
+
+      dealBlackjack: (rawBet) => {
+        let result: HandAttempt = {
+          ok: false,
+          reason: "The table is closed.",
+        };
+
+        set((state) => {
+          const session = state.casino.session;
+          if (session === null || session.game !== "blackjack") return state;
+
+          const open = session.hands[session.hands.length - 1];
+          if (open !== undefined && open.phase !== "settled") {
+            result = { ok: false, reason: "Finish the hand you are playing." };
+            return state;
+          }
+          // Hakkı bitmiş bir masa yeni el dağıtmaz. Çift tıklamayı da bu
+          // satır kesiyor: ilk çağrı listeyi uzatıyor, ikincisi görüyor.
+          if (session.hands.length >= SPINS_PER_VISIT) {
+            result = { ok: false, reason: "No hands left." };
+            return state;
+          }
+
+          const check = validateBet(rawBet, state.player.gold);
+          if (!check.ok) {
+            result = { ok: false, reason: check.message ?? "Invalid bet." };
+            return state;
+          }
+
+          const hand = dealHand(session.hands.length, check.bet);
+          result = { ok: true, hand };
+
+          // Bahis dağıtırken düşülüyor, ödeme el kapanınca ekleniyor. Doğal
+          // bir blackjack elin ilk anında kapanabildiği için ikisi de burada.
+          return {
+            player: {
+              ...state.player,
+              gold: clampGold(
+                state.player.gold - hand.bet + (hand.payout ?? 0),
+              ),
+            },
+            casino: {
+              ...state.casino,
+              session: { ...session, hands: [...session.hands, hand] },
+            },
+          };
+        });
+
+        return result;
+      },
+
+      hitBlackjack: () =>
+        set((state) => {
+          const session = state.casino.session;
+          if (session === null || session.game !== "blackjack") return state;
+
+          const index = session.hands.length - 1;
+          const current = session.hands[index];
+          if (current === undefined || current.phase !== "player") return state;
+
+          const next = hitHand(current);
+          const hands = [...session.hands];
+          hands[index] = next;
+
+          return {
+            // Patlayan el burada kapanıyor ama ödemesi 0, yani altın
+            // değişmiyor — yine de tek yerden geçmesi için ekliyoruz.
+            player: {
+              ...state.player,
+              gold: clampGold(state.player.gold + next.payout - current.payout),
+            },
+            casino: { ...state.casino, session: { ...session, hands } },
+          };
+        }),
+
+      standBlackjack: () =>
+        set((state) => {
+          const session = state.casino.session;
+          if (session === null || session.game !== "blackjack") return state;
+
+          const index = session.hands.length - 1;
+          const current = session.hands[index];
+          if (current === undefined || current.phase !== "player") return state;
+
+          const next = standHand(current);
+          const hands = [...session.hands];
+          hands[index] = next;
+
+          return {
+            player: {
+              ...state.player,
+              gold: clampGold(state.player.gold + next.payout - current.payout),
+            },
+            casino: { ...state.casino, session: { ...session, hands } },
+          };
+        }),
+
+      doubleBlackjack: () => {
+        let result: HandAttempt = { ok: false, reason: "You cannot double now." };
+
+        set((state) => {
+          const session = state.casino.session;
+          if (session === null || session.game !== "blackjack") return state;
+
+          const index = session.hands.length - 1;
+          const current = session.hands[index];
+          if (current === undefined || !canDouble(current)) return state;
+
+          // İkiye katlamak ikinci bir bahis yatırmak demek; bakiye yetmiyorsa
+          // masaya hiç dokunmuyoruz.
+          if (state.player.gold < current.bet) {
+            result = {
+              ok: false,
+              reason: "Not enough coins to double down.",
+            };
+            return state;
+          }
+
+          const next = doubleDown(current);
+          const hands = [...session.hands];
+          hands[index] = next;
+          result = { ok: true, hand: next };
+
+          return {
+            player: {
+              ...state.player,
+              gold: clampGold(
+                state.player.gold - current.bet + next.payout - current.payout,
+              ),
+            },
+            casino: { ...state.casino, session: { ...session, hands } },
+          };
+        });
+
+        return result;
+      },
+
+      claimCasinoJackpot: (spinIndex) => {
+        let claimed = false;
+
+        set((state) => {
+          const session = state.casino.session;
+          if (session === null) return state;
+          if (session.claimedJackpots.includes(spinIndex)) return state;
+
+          const spin = session.spins[spinIndex];
+          if (spin === undefined || !spin.isJackpot) return state;
+
+          claimed = true;
+          return {
+            casino: {
+              ...state.casino,
+              session: {
+                ...session,
+                claimedJackpots: [...session.claimedJackpots, spinIndex],
+              },
+            },
+          };
+        });
+
+        return claimed;
+      },
+
+      leaveCasino: () =>
+        set((state) => ({ casino: { ...state.casino, session: null } })),
+
       addLog: (message, tone = "info") =>
         set((state) => ({
           log: [{ id: (logCounter += 1), message, tone }, ...state.log].slice(
@@ -571,14 +1141,39 @@ export const useGameStore = create<GameState>()(
        * konum, relikler) uyumlu; sadece yarıda kalmış savaşın şekli değişti.
        */
       migrate: (persisted, version) => {
-        const state = persisted as Partial<GameState>;
+        let state = persisted as Partial<GameState>;
+
         if (version < 7) {
-          return {
+          state = {
             ...state,
             battle: null,
             phase: state.phase === "battle" ? "board" : state.phase,
           };
         }
+
+        // v8: hikâye bloğu eklendi. Eski kayıtta yok; koşuyu bozmadan boş bir
+        // hikâye durumu takıyoruz. Kısmen yazılmış bir blok da olabileceği
+        // için (elle düzenlenmiş kayıt, yarım yazma) alan alan dolduruyoruz —
+        // eksik bir alan motoru `undefined` ile patlatmasın.
+        if (version < 8 || state.story === undefined) {
+          state = { ...state, story: mergeStoryState(state.story) };
+        }
+
+        // v9: kumarhane bloğu. Aynı mantık — eksikse boş hâliyle takılıyor.
+        if (version < 9 || state.casino === undefined) {
+          state = { ...state, casino: mergeCasinoState(state.casino) };
+        }
+
+        // v10: slot makinesi tek sıradan 3x3'e geçti, yani `ResolvedSpin`in
+        // şekli değişti (reels artık sembol değil pencere dizisi). Yarıda
+        // kalmış bir oturum eski şekli taşıyor ve yeni ekranda anlamsız
+        // görünürdü; ziyaret hakkını da geri veriyoruz ki oyuncu bir şey
+        // kaybetmesin.
+        if (version < 10) {
+          const casino = mergeCasinoState(state.casino);
+          state = { ...state, casino: { ...casino, session: null } };
+        }
+
         return state;
       },
       // Hydration'ı elle tetikliyoruz: sunucu ve istemcinin ilk render'ı
@@ -602,7 +1197,10 @@ export const useGameStore = create<GameState>()(
         winStreak: state.winStreak,
         bossesDefeated: state.bossesDefeated,
         records: state.records,
+        story: state.story,
+        casino: state.casino,
         playerName: state.playerName,
+        expShare: state.expShare,
       }),
       onRehydrateStorage: () => (state) => {
         // Log id sayacını kayıttaki en büyük id'nin üstüne taşı ki
@@ -612,6 +1210,13 @@ export const useGameStore = create<GameState>()(
             (max, entry) => Math.max(max, entry.id),
             0,
           );
+          // `migrate` sadece sürüm atlarken çalışıyor. Güncel sürümlü ama
+          // hikâye bloğu eksik/bozuk bir kayıt (yarım yazma, elle düzenleme)
+          // buradan da onarılıyor.
+          state.story = mergeStoryState(state.story);
+          state.casino = mergeCasinoState(state.casino);
+          // EXP Share sonradan eklendi: eski kayıtta yok, açık başlasın.
+          if (typeof state.expShare !== "boolean") state.expShare = true;
         }
         useGameStore.setState({ hydrated: true });
       },
@@ -661,6 +1266,43 @@ export function selectStreakMultiplier(state: {
     state.winStreak,
     buildRunModifiers(state.relics).streakStep,
   );
+}
+
+/**
+ * Hikâye motorunun okuduğu bağlam. Gereksinimler ve zar modifiyerleri
+ * store'a değil bu düz objeye bakıyor, böylece motor React'siz test edilebiliyor.
+ */
+export function selectStoryContext(state: {
+  story: StoryState;
+  act: number;
+  player: Player;
+  pokedex: Record<number, Pokemon>;
+  relics: RelicId[];
+}): StoryContext {
+  const member = selectActiveMember(state);
+  const pokemon = selectPokemonFor(state, member);
+
+  const inventory: Record<string, number> = {};
+  for (const entry of state.player.inventory) {
+    inventory[entry.itemId] = entry.quantity;
+  }
+
+  return {
+    story: state.story,
+    act: state.act,
+    gold: state.player.gold,
+    inventory,
+    relics: state.relics,
+    activeTypes: (pokemon?.types ?? []) as PokemonType[],
+    activeLevel: member?.level ?? 0,
+  };
+}
+
+/** Kumarhanenin açık oturumu — yoksa null. */
+export function selectCasinoSession(state: {
+  casino: CasinoState;
+}): CasinoState["session"] {
+  return state.casino.session;
 }
 
 /** Nodes the player may step onto right now. */

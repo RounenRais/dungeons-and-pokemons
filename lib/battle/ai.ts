@@ -53,11 +53,22 @@ function isUselessMove(
   defender: Combatant,
   move: Move,
 ): boolean {
+  const traitCheck = getMoveTrait(move.name);
+
+  // Ön koşulu bu turda sağlanmayan hareketler: motorda kesin başarısız
+  // olacaklar, o yüzden AI'ın onları denemesinin hiçbir anlamı yok.
+  if (traitCheck?.firstTurnOnly === true && attacker.volatile.turnsActive > 1) {
+    return true;
+  }
+  if (traitCheck?.failIfHurt === true && attacker.volatile.hurtThisTurn) {
+    return true;
+  }
+
   if (move.category !== "status") {
     return getTypeEffectiveness(move.type, defender.pokemon.types) === 0;
   }
 
-  const trait = getMoveTrait(move.name);
+  const trait = traitCheck;
   // Özel bir davranışı olan status hareketleri her zaman bir işe yarar.
   if (trait !== null) return false;
 
@@ -141,6 +152,10 @@ function scoreDamagingMove(
   }
   // Tek vuruşta bayıltanlar kumar.
   if (trait?.ohko === true) score = 0.35;
+  // Explosion kendi canına mal oluyor: rakibi götürmüyorsa savaşı kaybettirir.
+  if (trait?.selfFaint === true && expected < defender.currentHp) score = 0.02;
+  // Upper Hand rakip öncelikli saldırmadıkça boşa gider; tahmin edemiyoruz.
+  if (trait?.priorityCounter === true) score *= 0.3;
 
   return score;
 }
@@ -278,6 +293,10 @@ function scoreStatusMove(
         score,
         attacker.status !== "none" && defender.status === "none" ? 0.5 : 0,
       );
+    }
+    // Memento: bedeli kendi canı. Zaten ölmek üzereyken bir anlamı var.
+    if (trait.selfFaint === true) {
+      score = hpRatio < 0.2 ? Math.max(score, 0.4) : 0.02;
     }
   }
 

@@ -16,6 +16,7 @@ const NODE_ICON_NAMES: Record<MapNodeType, GameIconName> = {
   CHEST: "chest",
   REST: "campfire",
   EVENT: "question",
+  CASINO: "clover",
 };
 
 export function MapIcon({

@@ -208,7 +208,29 @@ const SIGNATURE_EVENT_MOVES = [
   "zippy-zap",
 ];
 
+/**
+ * Ön koşulu bizde hiç oluşamayan hareketler.
+ *
+ * Hepsi jenerik motorda "çalışıyor" görünüyor ama mainline'daki şartı
+ * kurulamıyor, yani ya hiç işlemiyor ya da bedavaya güçlü bir hamleye
+ * dönüşüyor. Bir hamle slotunu bunlara harcatmaktansa listeden çıkarıyoruz.
+ */
+const IMPOSSIBLE_PRECONDITION = [
+  // Uyurken kullanılır; bizde uyku hamleyi tamamen engelliyor.
+  "snore",
+  // Berry yemiş olmayı ister; eşya sistemimiz yok.
+  "belch",
+  "stuff-cheeks",
+  // Sadece kullanıcıyla aynı tipteki hedefe işler.
+  "synchronoise",
+  // Zemin (terrain) yoksa başarısız.
+  "steel-roller",
+  // "Bu tur fiziksel saldırı yemiş olmak" şartı turun başında bilinemiyor.
+  "shell-trap",
+];
+
 const BANNED_MOVES = new Set<string>([
+  ...IMPOSSIBLE_PRECONDITION,
   ...ALLY_ONLY,
   ...NEEDS_PARTY,
   ...ENTRY_HAZARDS,

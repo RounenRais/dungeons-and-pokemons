@@ -36,6 +36,7 @@ import {
   measureSprite,
 } from "@/lib/game/spriteMetrics";
 import type { RunModifiers } from "@/lib/game/modifiers";
+import type { PartyMemberInput } from "@/lib/game/progression";
 import { getXpToNextLevel } from "@/lib/game/leveling";
 import { getShopItem } from "@/lib/data/shopItems";
 import { TYPE_COLORS } from "@/lib/data/typeChart";
@@ -94,6 +95,11 @@ export interface BattleResult {
   goldDelta: number;
   /** Evrim olduysa yeni tür — pokédex'e eklenmeli. */
   evolvedPokemon: Pokemon | null;
+  /**
+   * Pokédex'e yazılması gereken diğer türler: EXP Share ile level atlayıp
+   * evrimleşen yedeklerin yeni formları (sprite'ları buradan geliyor).
+   */
+  registeredPokemon: Pokemon[];
   /** Boss yakalandıysa takıma katılacak üye. */
   capturedMember: TeamMember | null;
   capturedPokemon: Pokemon | null;
@@ -119,6 +125,8 @@ interface BattleScreenProps {
   runModifiers: RunModifiers;
   /** Galibiyet serisi çarpanı. */
   streakMultiplier: number;
+  /** EXP Share açıksa yedekler de yarım pay XP alır. */
+  expShare: boolean;
   onFinish: (result: BattleResult) => void;
 }
 
@@ -143,6 +151,7 @@ export function BattleScreen({
   onConsumeItem,
   runModifiers,
   streakMultiplier,
+  expShare,
   onFinish,
 }: BattleScreenProps) {
   const [teamState, setTeamState] = useState<TeamMember[]>(team);
@@ -398,6 +407,7 @@ export function BattleScreen({
       activeIndex: activeIdx,
       goldDelta: 0,
       evolvedPokemon: null,
+      registeredPokemon: [],
       capturedMember: null,
       capturedPokemon: null,
       logs: [],
@@ -405,18 +415,43 @@ export function BattleScreen({
   }
 
   function finishWin(victory: VictoryResult) {
+    // EXP Share ile pay alan yedekler kendi indekslerine geri yazılıyor.
+    const shared = new Map(
+      victory.sharedMembers.map((entry) => [entry.index, entry.member]),
+    );
+
     onFinish({
       outcome: "win",
       team: teamState.map((member, index) =>
-        index === activeIdx ? victory.member : member,
+        index === activeIdx ? victory.member : (shared.get(index) ?? member),
       ),
       activeIndex: activeIdx,
       goldDelta: victory.goldDelta,
       evolvedPokemon: victory.evolvedPokemon,
+      registeredPokemon: victory.sharedMembers.map((entry) => entry.pokemon),
       capturedMember: victory.capturedMember,
       capturedPokemon: victory.capturedPokemon,
       logs: victory.logs,
     });
+  }
+
+  /**
+   * EXP Share'in pay dağıtacağı üyeler: sahadaki dışında, ayakta olan ve tür
+   * verisi elimizde olan herkes. (Bayılanları `resolveVictory` da eliyor;
+   * burada elemek gereksiz iş yapmamak için.)
+   */
+  function buildShareParty(): PartyMemberInput[] {
+    if (!expShare) return [];
+    const party: PartyMemberInput[] = [];
+
+    teamState.forEach((member, index) => {
+      if (index === activeIdx || member.currentHp <= 0) return;
+      const pokemon = pokedex[member.pokemonId];
+      if (pokemon === undefined) return;
+      party.push({ index, member, pokemon });
+    });
+
+    return party;
   }
 
   const battleItems = inventory.filter((entry) => {
@@ -682,6 +717,8 @@ export function BattleScreen({
           teamSize={teamSize}
           runModifiers={runModifiers}
           streakMultiplier={streakMultiplier}
+          expShare={expShare}
+          party={buildShareParty()}
           inventory={inventory}
           onConsumeBall={onConsumeItem}
           onDone={finishWin}

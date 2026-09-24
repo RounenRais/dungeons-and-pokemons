@@ -28,6 +28,35 @@ PokeAPI item sprites, not icons.
 All served self-hosted through `next/font`, all under the SIL Open Font License:
 Marcellus, Source Sans 3, Caveat and Press Start 2P.
 
+## Trainer battle sprites
+
+`public/sprites/trainers/` holds the trainer battle sprites from Pokémon Red /
+Blue (Game Boy / Game Boy Color). The sheet
+(`public/sprites/source/trainers-rb-battle.png`) was supplied with the project
+as a ripped sprite sheet — the kind archived on sites such as The Spriters
+Resource — and is kept unmodified; the individual PNGs are cut from it by
+`scripts/build-trainer-sprites.py`. Both palettes on the sheet are kept: the
+colour Super Game Boy set (`sgb/`, used by default) and the greyscale Game Boy
+set (`gb/`).
+
+These sprites are the original artwork of Nintendo / Creatures Inc. / GAME
+FREAK inc. No ownership is claimed over them, nothing here was redrawn or
+generated, and they are used only in this non-commercial fan project.
+
+The sheet carries no names, so no trainer in
+`lib/data/trainerCatalog.ts` is labelled with a class name yet — every entry
+is keyed by its grid position and flagged `nameVerified: false` until a human
+confirms it.
+
+## Fantasy UI atlas
+
+`public/sprites/ui/fantasy/` is cut from `Fantasy-UI.png`
+(`public/sprites/source/fantasy-ui.png`), a pixel-art interface atlas supplied
+with the project; the source file is kept unmodified and the pieces are cut by
+`scripts/build-fantasy-ui.py`. Its original author is not recorded here — fill
+in the artist and licence once the source is confirmed. Nothing in it was
+redrawn or AI-generated.
+
 ## Battle UI sprites
 
 The FRLG battle backgrounds, status panels and move effects in
@@ -36,3 +65,26 @@ The FRLG battle backgrounds, status panels and move effects in
 ## Parchment texture
 
 Generated procedurally by `scripts/build-parchment.py` — no third-party asset.
+
+## Trainer portraits (story events)
+
+The story events at Unknown stops use the trainer-class sprites from
+[Pokémon Showdown](https://play.pokemonshowdown.com/sprites/trainers/), loaded
+straight from that address (see `lib/data/showdownTrainers.ts`). They are
+referenced, not copied into this repo.
+
+The reason for a second source is naming: the Red/Blue sheet above carries no
+labels, so its sprites cannot be used as named characters. Showdown's archive
+keys each sprite by its trainer class (`lass.png`, `blackbelt.png`), which is
+what makes "a Rocket Grunt is waiting on the path" possible without guessing.
+
+These sprites are the original artwork of Nintendo / Creatures Inc. / GAME
+FREAK inc., collected by the Pokémon Showdown project. No ownership is claimed
+over them and they are used only in this non-commercial fan project.
+
+## Playing cards (blackjack)
+
+The card faces and the card back at the casino's blackjack table come from
+[hayeah/playing-cards-assets](https://github.com/hayeah/playing-cards-assets),
+which is MIT licensed, and are loaded from that repository's raw URLs (see
+`lib/data/cards.ts`). Nothing was redrawn.

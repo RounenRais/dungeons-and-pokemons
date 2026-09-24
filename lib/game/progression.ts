@@ -6,6 +6,7 @@
 import {
   applyExperience,
   calculateXpGain,
+  EXP_SHARE_RATE,
   getMovesLearnedAtLevels,
 } from "./leveling";
 import { rollReward, type Reward } from "./rewards";
@@ -72,6 +73,29 @@ export interface VictoryOutcome {
   pendingMoves: PendingMove[];
   reward: Reward;
   goldDelta: number;
+  /** EXP Share açıkken pay alan yedek üyelerin sonuçları (kapalıysa boş). */
+  sharedExperience: SharedExperience[];
+}
+
+/** EXP Share'in takıma dağıttığı pay için tek bir üyenin girdisi. */
+export interface PartyMemberInput {
+  /** Takım dizisindeki indeks — sonuç geri yazılırken kullanılır. */
+  index: number;
+  member: TeamMember;
+  pokemon: Pokemon;
+}
+
+/** EXP Share ile pay alan bir yedek üyenin sonucu. */
+export interface SharedExperience {
+  index: number;
+  member: TeamMember;
+  pokemon: Pokemon;
+  xpGained: number;
+  levelBefore: number;
+  levelAfter: number;
+  evolution: EvolutionOutcome | null;
+  /** Boş hamle slotu varsa otomatik öğrenilen hareketler. */
+  learnedMoves: Move[];
 }
 
 export interface ResolveVictoryArgs {
@@ -89,6 +113,13 @@ export interface ResolveVictoryArgs {
   enemyMember?: TeamMember;
   /** Takım doluysa yakalama olmaz. */
   teamSize?: number;
+  /**
+   * EXP Share'in pay dağıtacağı DİĞER takım üyeleri (savaşan üye hariç).
+   * Boşsa ya da `expShare` kapalıysa hiçbir pay dağıtılmaz.
+   */
+  party?: readonly PartyMemberInput[];
+  /** EXP Share açık mı? */
+  expShare?: boolean;
   random?: RandomFn;
 }
 
@@ -198,8 +229,14 @@ async function applyAutomaticEvolutions(
   };
 }
 
-/** Stat ödülünü kalıcı boost olarak uygular (HP ödülünde max HP'yi de büyütür). */
-function applyBoostReward(
+/**
+ * Stat ödülünü kalıcı boost olarak uygular (HP ödülünde max HP'yi de büyütür).
+ *
+ * Dışa açık, çünkü tempo simülasyonu (scripts/sim-run.mts) de bunu kullanıyor:
+ * ödülün etkisini kopyalayarak taklit etmek, ölçtüğü şeyin oyundan sapması
+ * demek olurdu.
+ */
+export function applyBoostReward(
   member: TeamMember,
   pokemon: Pokemon,
   reward: Reward,
@@ -229,6 +266,67 @@ function applyBoostReward(
   };
 }
 
+/**
+ * EXP Share: savaşa girmeyen üyelere yarım pay dağıtır.
+ *
+ * Yedekler de level atlar, evrimleşir ve boş slotları varsa yeni hamlelerini
+ * öğrenir. Boş slot yoksa hamle sessizce atlanıyor — sahada olmayan bir
+ * Pokémon için oyuncuyu "hangisini sileyim?" diye sıraya dizmek, savaş sonu
+ * akışını bir muhasebe ekranına çeviriyor. Dört hamlesi dolu bir yedeğin
+ * setini oyuncu takım panelinden kendisi değiştirebiliyor.
+ *
+ * Bayılmış üyeler pay almaz (mainline kuralı).
+ */
+async function shareExperienceWithParty(
+  party: readonly PartyMemberInput[],
+  xpGained: number,
+): Promise<SharedExperience[]> {
+  const share = Math.max(1, Math.floor(xpGained * EXP_SHARE_RATE));
+  const results: SharedExperience[] = [];
+
+  for (const entry of party) {
+    if (entry.member.currentHp <= 0) continue;
+
+    const experience = applyExperience(entry.member, entry.pokemon, share);
+    const evolutionResult =
+      experience.levelsGained.length > 0
+        ? await applyAutomaticEvolutions(experience.member, entry.pokemon)
+        : { member: experience.member, pokemon: entry.pokemon, evolution: null };
+
+    let member = evolutionResult.member;
+    const learnedMoves: Move[] = [];
+
+    if (experience.levelsGained.length > 0 && member.moves.length < 4) {
+      const learnedIds = getMovesLearnedAtLevels(
+        evolutionResult.pokemon,
+        experience.levelsGained,
+        member.moves.map((move) => move.id),
+      );
+      if (learnedIds.length > 0) {
+        const moves = await getMoves(learnedIds);
+        for (const move of moves) {
+          if (member.moves.length >= 4) break;
+          member = teachMove(member, move, null);
+          learnedMoves.push(move);
+        }
+      }
+    }
+
+    results.push({
+      index: entry.index,
+      member,
+      pokemon: evolutionResult.pokemon,
+      xpGained: share,
+      levelBefore: entry.member.level,
+      levelAfter: member.level,
+      evolution: evolutionResult.evolution,
+      learnedMoves,
+    });
+  }
+
+  return results;
+}
+
 export async function resolveVictory(
   args: ResolveVictoryArgs,
 ): Promise<VictoryOutcome> {
@@ -242,6 +340,8 @@ export async function resolveVictory(
     random = Math.random,
     runModifiers = createRunModifiers(),
     streakMultiplier = 1,
+    party = [],
+    expShare = false,
   } = args;
 
   const xpGained = Math.max(
@@ -326,6 +426,11 @@ export async function resolveVictory(
         )
       : 0;
 
+  const sharedExperience =
+    expShare && party.length > 0
+      ? await shareExperienceWithParty(party, xpGained)
+      : [];
+
   return {
     xpGained,
     levelBefore,
@@ -340,6 +445,7 @@ export async function resolveVictory(
     reward:
       reward.kind === "gold" ? { kind: "gold", amount: goldDelta } : reward,
     goldDelta,
+    sharedExperience,
   };
 }
 

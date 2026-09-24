@@ -4,6 +4,7 @@
 import {
   applyExperience,
   calculateXpGain,
+  EXP_SHARE_RATE,
   getMovesLearnedAtLevels,
   getTotalXpForLevel,
   getXpToNextLevel,
@@ -176,6 +177,80 @@ console.log(`INFO  Lv33 + ${bigJump.xpGained} XP → Lv${bigJump.levelAfter}, ev
 check('Zincirleme evrim Lv36 eşiğini aşıyor', bigJump.levelAfter >= 36, true);
 check('Tek seferde iki evrim tamamlanıyor', bigJump.evolution?.to.name, 'charizard');
 check('Zincir sonunda tür güncel', bigJump.member.pokemonId, bigJump.evolution?.to.id);
+
+// --- EXP Share -------------------------------------------------------------
+//
+// Derdi şu: boss'tan yeni yakalanan bir Pokémon oyuncunun onlarca level
+// gerisinde geliyordu ve onu yetiştirmenin tek yolu, henüz hiçbir şeye
+// dayanamayacakken savaşa sokmaktı. Açıkken yedekler yarım pay alıyor.
+{
+  const squirtle = await getPokemon('squirtle');
+  const squirtleSpecies = await getSpecies(squirtle.speciesId);
+  const bench = createTeamMember(squirtle, {
+    level: 5,
+    moves: await getMoves(selectStartingMoveIds(squirtle, 5)),
+    isShiny: false,
+    growthRate: squirtleSpecies.growthRate,
+  });
+  const fainted: TeamMember = { ...bench, instanceId: 'fainted', currentHp: 0 };
+
+  const args = {
+    member: { ...base, level: 15, xp: 0 },
+    pokemon: charmander,
+    enemyPokemon: await getPokemon('pidgey'),
+    enemyLevel: 12,
+    isBoss: false,
+    tileIndex: 8,
+    random: createRandom(5),
+    party: [
+      { index: 1, member: bench, pokemon: squirtle },
+      { index: 2, member: fainted, pokemon: squirtle },
+    ],
+  };
+
+  const off = await resolveVictory({ ...args, expShare: false });
+  check('EXP Share kapaliyken kimse pay almiyor', off.sharedExperience.length, 0);
+
+  const on = await resolveVictory({ ...args, expShare: true });
+  check('EXP Share acikken yedek pay aliyor', on.sharedExperience.length, 1);
+  check(
+    'Bayilmis uye pay almiyor',
+    on.sharedExperience.some((shared) => shared.member.instanceId === 'fainted'),
+    false,
+  );
+  check(
+    'Pay yarim',
+    on.sharedExperience[0].xpGained,
+    Math.max(1, Math.floor(on.xpGained * EXP_SHARE_RATE)),
+  );
+  check('Pay sahadaki uyenin payindan az', on.sharedExperience[0].xpGained < on.xpGained, true);
+  check('Yedek indeksi korunuyor', on.sharedExperience[0].index, 1);
+  console.log(
+    `INFO  savasan +${on.xpGained} XP, yedek +${on.sharedExperience[0].xpGained} XP ` +
+      `(Lv${on.sharedExperience[0].levelBefore} -> Lv${on.sharedExperience[0].levelAfter})`,
+  );
+  check(
+    'Yedek level atladi',
+    on.sharedExperience[0].levelAfter > on.sharedExperience[0].levelBefore,
+    true,
+  );
+  check('Sahadaki uyenin payi etkilenmedi', on.xpGained, off.xpGained);
+
+  // Yedek de evrimlesebilmeli: Lv15 Squirtle'a bol XP ver.
+  const evolving = await resolveVictory({
+    ...args,
+    expShare: true,
+    enemyPokemon: await getPokemon('blissey'),
+    enemyLevel: 60,
+    party: [{ index: 1, member: { ...bench, level: 15 }, pokemon: squirtle }],
+  });
+  check('Yedek de evrimlesiyor', evolving.sharedExperience[0].evolution?.to.name, 'wartortle');
+  check(
+    'Evrimlesen yedegin turu guncellendi',
+    evolving.sharedExperience[0].member.pokemonId,
+    evolving.sharedExperience[0].pokemon.id,
+  );
+}
 
 console.log(failures === 0 ? '\nTÜM KONTROLLER GEÇTİ' : `\n${failures} KONTROL BAŞARISIZ`);
 process.exit(failures === 0 ? 0 : 1);

@@ -591,8 +591,145 @@ const alwaysHit = () => 0.01;
   );
 }
 
+// --- Koşullu hareketler ----------------------------------------------------
+// Fake Out & co: jenerik motor bunları bedava, her tur çalışan hamleler gibi
+// uyguluyordu. Mainline'daki şart artık motorda.
+{
+  const state = await arena(
+    'meowth',
+    ['fake-out', 'scratch'],
+    'rattata',
+    ['tackle'],
+  );
+  const fakeOut = moveOf(state, 0);
+  const scratch = moveOf(state, 1);
+  const enemyTackle = enemyMoveOf(state, 0);
+
+  const first = executeTurn(
+    state,
+    { kind: 'move', move: fakeOut },
+    enemyTackle,
+    alwaysHit,
+  );
+  check(
+    'Fake Out ilk turda işliyor',
+    first.events.some((event) => event.kind === 'damage' && event.side === 'enemy'),
+    true,
+  );
+
+  // İkinci tur: hamle boşa gitmeli.
+  const second = executeTurn(
+    first.state,
+    { kind: 'move', move: fakeOut },
+    enemyTackle,
+    alwaysHit,
+  );
+  check(
+    'Fake Out ikinci turda başarısız',
+    second.events.some((event) => event.kind === 'fail' && event.side === 'player'),
+    true,
+  );
+  check(
+    'Başarısız Fake Out hasar vermiyor',
+    second.events.some((event) => event.kind === 'damage' && event.side === 'enemy'),
+    false,
+  );
+  // Normal bir hamle aynı turda hâlâ çalışıyor — kilit Fake Out'a özel.
+  const third = executeTurn(
+    second.state,
+    { kind: 'move', move: scratch },
+    enemyTackle,
+    alwaysHit,
+  );
+  check(
+    'Diğer hamleler etkilenmiyor',
+    third.events.some((event) => event.kind === 'damage' && event.side === 'enemy'),
+    true,
+  );
+}
+
+// Explosion kullanıcısını bayıltıyor mu?
+{
+  const state = await arena('voltorb', ['explosion'], 'snorlax', ['tackle']);
+  const result = executeTurn(
+    state,
+    { kind: 'move', move: moveOf(state, 0) },
+    enemyMoveOf(state, 0),
+    alwaysHit,
+  );
+  check('Explosion kullanıcısını bayıltıyor', result.state.player.currentHp, 0);
+  check(
+    'Explosion yine de hasar veriyor',
+    result.state.enemy.currentHp < state.enemy.maxHp,
+    true,
+  );
+}
+
+// Focus Punch: vurulduysa konsantrasyon bozulur. Rakip daha hızlı (Jolteon)
+// ve öncelik -3 olduğu için Snorlax'ın yumruğu her zaman sonra geliyor.
+{
+  const state = await arena(
+    'snorlax',
+    ['focus-punch'],
+    'jolteon',
+    ['thunder-shock'],
+  );
+  const result = executeTurn(
+    state,
+    { kind: 'move', move: moveOf(state, 0) },
+    enemyMoveOf(state, 0),
+    alwaysHit,
+  );
+  check(
+    'Vurulan Focus Punch boşa gidiyor',
+    result.events.some((event) => event.kind === 'damage' && event.side === 'enemy'),
+    false,
+  );
+}
+
+// Upper Hand sadece öncelikli bir saldırıyı keser.
+{
+  const state = await arena(
+    'hitmonchan',
+    ['upper-hand'],
+    'rattata',
+    ['tackle', 'quick-attack'],
+  );
+  const upperHand = moveOf(state, 0);
+
+  const vsNormal = executeTurn(
+    state,
+    { kind: 'move', move: upperHand },
+    enemyMoveOf(state, 0),
+    alwaysHit,
+  );
+  check(
+    'Upper Hand öncelikli olmayan hamleye karşı başarısız',
+    vsNormal.events.some((event) => event.kind === 'fail' && event.side === 'player'),
+    true,
+  );
+
+  const vsPriority = executeTurn(
+    state,
+    { kind: 'move', move: upperHand },
+    enemyMoveOf(state, 1),
+    alwaysHit,
+  );
+  check(
+    'Upper Hand öncelikli hamleyi kesiyor',
+    vsPriority.events.some(
+      (event) => event.kind === 'damage' && event.side === 'enemy',
+    ),
+    true,
+  );
+}
+
 // --- Kara liste ------------------------------------------------------------
 {
+  check('Snore oyuna girmiyor', isBannedMove('snore'), true);
+  check('Belch oyuna girmiyor', isBannedMove('belch'), true);
+  check('Synchronoise oyuna girmiyor', isBannedMove('synchronoise'), true);
+  check('Fake Out oyunda kalıyor', isBannedMove('fake-out'), false);
   check('Helping Hand oyuna girmiyor', isBannedMove('helping-hand'), true);
   check('After You oyuna girmiyor', isBannedMove('after-you'), true);
   check('Metronome oyuna girmiyor', isBannedMove('metronome'), true);

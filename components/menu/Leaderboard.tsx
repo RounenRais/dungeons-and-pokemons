@@ -2,17 +2,21 @@
 
 // Skor tablosu — ana menünün sağ sütunu.
 //
-// Tablo cihaz başına (localStorage); oyunun kendi backend'i yok. Adını
-// girmeden başlayan koşular buraya hiç yazılmıyor.
+// Liste bütün oyuncuların koşularını taşıyor (bkz. lib/game/leaderboard.ts).
+// Paylaşılan tabloya erişilemediğinde cihazdaki aynaya düşülüyor ve bu
+// başlıkta açıkça yazıyor — "global" diye gösterip yerel liste göstermek
+// oyuncuyu yanıltır. Adını girmeden başlayan koşular hiçbir tabloya yazılmıyor.
 
 import { motion } from "framer-motion";
-import {
-  LEADERBOARD_SIZE,
-  type LeaderboardEntry,
+import type {
+  LeaderboardEntry,
+  LeaderboardSource,
 } from "@/lib/game/leaderboard";
 
 interface LeaderboardProps {
   entries: LeaderboardEntry[];
+  /** Liste paylaşılan sunucudan mı, sadece bu cihazdan mı geliyor? */
+  source: LeaderboardSource;
   /** Az önce eklenen koşu — listede vurgulanıyor. */
   highlightId?: string | null;
 }
@@ -20,18 +24,35 @@ interface LeaderboardProps {
 /** İlk üçün madalya rengi; gerisi sade. */
 const RANK_COLORS = ["#b8860b", "#8a8a8a", "#a0642a"];
 
-export function Leaderboard({ entries, highlightId = null }: LeaderboardProps) {
+export function Leaderboard({
+  entries,
+  source,
+  highlightId = null,
+}: LeaderboardProps) {
+  const isGlobal = source === "global";
+
   return (
     <section className="parchment-card w-[min(92vw,17rem)] px-4 py-3">
-      <h2 className="ink-heading text-[10px]">Leaderboard</h2>
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 className="ink-heading text-[10px]">
+          {isGlobal ? "Leaderboard" : "Your runs"}
+        </h2>
+        <span className="text-[9px] uppercase tracking-wide text-[var(--ink-faint)]">
+          {isGlobal ? "everyone" : "this device"}
+        </span>
+      </div>
       <hr className="ink-rule mt-2" />
 
       {entries.length === 0 ? (
         <p className="mt-3 text-xs leading-relaxed text-[var(--ink-faint)]">
-          No runs recorded yet. Finish a run with a name and the best {LEADERBOARD_SIZE} land here.
+          No runs recorded yet. Finish a run with a name and it lands here.
         </p>
       ) : (
-        <ol className="mt-2 space-y-0.5">
+        /*
+          Liste artık yüz satıra kadar çıkabiliyor, o yüzden kendi içinde
+          kayıyor — menü kartının yanında sabit bir yükseklikte duruyor.
+        */
+        <ol className="mt-2 max-h-[22rem] space-y-0.5 overflow-y-auto pr-1">
           {entries.map((entry, index) => (
             <motion.li
               key={entry.id}
@@ -64,7 +85,9 @@ export function Leaderboard({ entries, highlightId = null }: LeaderboardProps) {
 
       {entries.length > 0 && (
         <p className="mt-2 text-[10px] text-[var(--ink-faint)]">
-          Ranked by how deep the run reached.
+          {isGlobal
+            ? "Every player, ranked by how deep the run reached."
+            : "Offline — showing the runs saved on this device."}
         </p>
       )}
     </section>

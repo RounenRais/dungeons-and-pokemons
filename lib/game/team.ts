@@ -66,6 +66,30 @@ export function getMemberName(
   return member.nickname ?? pokemon?.displayName ?? `#${member.pokemonId}`;
 }
 
+/**
+ * Takımın ortalama level'ı — karşılaşmaların zorluğu buna göre ayarlanıyor.
+ *
+ * Eskiden ölçü sahadaki Pokémon'un level'ıydı. Bunun iki kötü sonucu vardı:
+ * güçlü üyeyi bankta tutup zayıf biriyle dolaşmak zorluğu düşüren bir sömürü
+ * oluyordu, ve boss'tan yeni yakalanan düşük level'lı bir Pokémon'u sahaya
+ * sürmek bütün koşuyu kolaylaştırıyordu. Ortalama, takımın TAMAMINI hesaba
+ * katıyor: kimi sahaya sürdüğün taktik bir karar olarak kalıyor ama zorluğu
+ * belirlemiyor.
+ *
+ * Bayılmış üyeler de sayılıyor — savaş dışı kalmaları takımın gerçek gücünü
+ * değiştirmiyor, dinlenince geri gelecekler.
+ */
+export function getTeamAverageLevel(team: readonly TeamMember[]): number {
+  if (team.length === 0) return 1;
+  const total = team.reduce((sum, member) => sum + member.level, 0);
+  return Math.max(1, Math.round(total / team.length));
+}
+
+/** Takımdaki en yüksek level — koşunun "oyuncu level'ı" sayılıyor. */
+export function getTeamTopLevel(team: readonly TeamMember[]): number {
+  return team.reduce((max, member) => Math.max(max, member.level), 0);
+}
+
 /** Savaşabilecek (HP'si kalan) üye var mı? */
 export function hasUsableMember(team: readonly TeamMember[]): boolean {
   return team.some((member) => member.currentHp > 0);

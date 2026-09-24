@@ -171,7 +171,43 @@ const forced = await createWildEnemy(12, {
   speciesId: 143,
 });
 check('istenen tur geldi (Snorlax)', forced.pokemon.id, 143);
-check('level yine oyuncuya gore', forced.member.level >= 20, true);
+
+// Tur sabitlendiginde level artik duz "oyuncunun level'i" degil: BST farki
+// level'a cevriliyor (bkz. getScaledLevelForSpecies). Yani 540 BST'lik bir
+// Snorlax oyuncunun ALTINDA bir level'da gelirken, 360 BST'lik bir Aipom
+// belirgin bicimde USTUNDE gelir. Olculen sey ikisinin de ayni "stat kutlesi"
+// hedefine oturmasi — kart hangi Pokemon'u gosterirse gostersin dovus olmasi.
+const forcedMass = forced.pokemon.baseStatTotal * forced.member.level;
+const playerMass = 400 * 20;
+check('guclu tur oyuncunun altinda level aliyor', forced.member.level < 20, true);
+check('yine de oyuncudan agir', forcedMass > playerMass, true);
+console.log(`INFO  Snorlax Lv${forced.member.level} kutle ${forcedMass} vs oyuncu ${playerMass}`);
+
+// Zayif bir tur ayni hedefe yukaridan oturuyor.
+const weak = await createWildEnemy(12, {
+  playerLevel: 20,
+  playerBst: 400,
+  kind: 'boss',
+  speciesId: 190, // Aipom, BST 360
+});
+const weakMass = weak.pokemon.baseStatTotal * weak.member.level;
+check('zayif tur oyuncunun ustunde level aliyor', weak.member.level > 20, true);
+check('zayif tur da oyuncudan agir', weakMass > playerMass, true);
+console.log(`INFO  Aipom Lv${weak.member.level} kutle ${weakMass} vs oyuncu ${playerMass}`);
+check(
+  'iki tur da ayni hedef bantta',
+  Math.abs(forcedMass - weakMass) / playerMass < 0.15,
+  true,
+);
+
+// Level yine oyuncuya bagli: oyuncu buyudukce rakip de buyuyor.
+const higher = await createWildEnemy(12, {
+  playerLevel: 40,
+  playerBst: 400,
+  kind: 'boss',
+  speciesId: 143,
+});
+check('oyuncu buyudukce rakip de buyuyor', higher.member.level > forced.member.level, true);
 
 console.log(failures === 0 ? '\nTÜM KONTROLLER GEÇTİ' : `\n${failures} KONTROL BAŞARISIZ`);
 if (failures > 0) process.exitCode = 1;

@@ -25,9 +25,14 @@
     "check:items": "npx --yes tsx scripts/check-item-sprites.mts",
     "check:guide": "npx --yes tsx scripts/check-guide.mts",
     "check:events": "npx --yes tsx scripts/check-events.mts",
+    "check:story": "npx --yes tsx scripts/check-story.mts",
+    "check:casino": "npx --yes tsx scripts/check-casino.mts",
+    "check:blackjack": "npx --yes tsx scripts/check-blackjack.mts",
+    "check:casino-store": "npx --yes tsx scripts/check-casino-store.mts",
     "smoke:boss": "npx --yes tsx scripts/smoke-boss.mts",
     "smoke:moves": "npx --yes tsx scripts/smoke-moves.mts",
-    "smoke:leaderboard": "npx --yes tsx scripts/smoke-leaderboard.mts"
+    "smoke:leaderboard": "npx --yes tsx scripts/smoke-leaderboard.mts",
+    "check:leaderboard-api": "npx --yes tsx scripts/check-leaderboard-api.mts"
   },
   "dependencies": {
     "framer-motion": "^13.2.0",

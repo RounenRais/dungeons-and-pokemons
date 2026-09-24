@@ -30,6 +30,8 @@ interface ShopScreenProps {
   discount: number;
   member: TeamMember;
   pokemon: Pokemon;
+  /** Takımın en yüksek level'ı — level kilitli eşyalar buna bakıyor. */
+  playerLevel: number;
   onBuyItem: (item: ShopItem) => void;
   onBuyChest: (tier: Rarity, price: number) => void;
   onLearnTm: (member: TeamMember, price: number, log: string) => void;
@@ -41,6 +43,7 @@ export function ShopScreen({
   discount,
   member,
   pokemon,
+  playerLevel,
   onBuyItem,
   onBuyChest,
   onLearnTm,
@@ -164,6 +167,11 @@ export function ShopScreen({
               item={item}
               price={priceOf(item.price)}
               affordable={gold >= priceOf(item.price)}
+              lockedUntil={
+                item.minLevel !== undefined && playerLevel < item.minLevel
+                  ? item.minLevel
+                  : null
+              }
               onBuy={() => {
                 if (item.effect.kind === "chest") {
                   onBuyChest(item.effect.tier, priceOf(item.price));
@@ -191,11 +199,14 @@ function ItemRow({
   item,
   price,
   affordable,
+  lockedUntil,
   onBuy,
 }: {
   item: ShopItem;
   price: number;
   affordable: boolean;
+  /** Level kilidi varsa gereken level; yoksa null. */
+  lockedUntil: number | null;
   onBuy: () => void;
 }) {
   // Kasa disindaki her seyin PokeAPI'de gercek bir esya gorseli var ve
@@ -222,17 +233,24 @@ function ItemRow({
         <p className="truncate text-xs text-[var(--ink-faint)]">
           {item.description}
         </p>
+        {lockedUntil !== null && (
+          <p className="mt-0.5 text-[11px] font-semibold text-[var(--poke-red-dark)]">
+            Needs a Lv {lockedUntil} Pokémon on your team.
+          </p>
+        )}
       </div>
 
       <button
         type="button"
         onClick={onBuy}
-        disabled={!affordable}
+        disabled={!affordable || lockedUntil !== null}
         className="shrink-0 rounded-lg bg-[var(--poke-yellow)] px-3 py-1.5 text-sm font-bold text-[var(--ink)] transition enabled:hover:brightness-110 disabled:cursor-not-allowed disabled:bg-[var(--ink-line)] disabled:text-[var(--ink-faint)]"
       >
         <span className="inline-flex items-center gap-1">
-          {price}
-          <GameIcon name="coins" className="h-3.5 w-3.5" />
+          {lockedUntil !== null ? `Lv ${lockedUntil}` : price}
+          {lockedUntil === null && (
+            <GameIcon name="coins" className="h-3.5 w-3.5" />
+          )}
         </span>
       </button>
     </li>

@@ -17,8 +17,14 @@ interface RunOverProps {
   records: RunRecords;
   /** Koşuya verilen ad; null ise oyuncu ad sormayı atlamıştı. */
   leaderboardName: string | null;
-  /** Koşu skor tablosunun ilk onuna girdi mi? */
-  madeLeaderboard: boolean;
+  /**
+   * Koşunun tabloya yazılma durumu.
+   *
+   * Tablo artık paylaşılan bir sunucuda, yani yazma bir AĞ İSTEĞİ — ekran
+   * açıldığında sonuç henüz bilinmiyor. Üç durumu ayırmak zorundayız, yoksa
+   * ekran bir an "yeterince derin değildi" yazıp sonra kendini düzeltiyor.
+   */
+  leaderboardStatus: "saving" | "recorded" | "missed";
   onRestart: () => void;
 }
 
@@ -28,7 +34,7 @@ export function RunOver({
   bossesDefeated,
   records,
   leaderboardName,
-  madeLeaderboard,
+  leaderboardStatus,
   onRestart,
 }: RunOverProps) {
   const isBestRun = depth >= records.bestDistance;
@@ -66,9 +72,11 @@ export function RunOver({
         <p className="mt-3 text-sm text-[var(--ink-soft)]">
           {leaderboardName === null
             ? "You skipped the name, so this run was not added to the leaderboard."
-            : madeLeaderboard
-              ? `Recorded on the leaderboard as ${leaderboardName}.`
-              : `Not deep enough for the leaderboard this time, ${leaderboardName}.`}
+            : leaderboardStatus === "saving"
+              ? `Sending this run to the leaderboard as ${leaderboardName}…`
+              : leaderboardStatus === "recorded"
+                ? `Recorded on the leaderboard as ${leaderboardName}.`
+                : `The leaderboard could not be reached, ${leaderboardName} — this run was saved on this device.`}
         </p>
 
         <p className="mt-5 text-xs text-[var(--ink-faint)]">

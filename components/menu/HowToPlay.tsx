@@ -15,7 +15,9 @@ import { GameIcon } from "@/components/icons/GameIcons";
 import { MapIcon } from "@/components/map/MapIcons";
 import { BATTLE_BACKGROUNDS } from "@/lib/data/battleBackgrounds";
 import { getBallSpriteUrl, POKE_BALLS } from "@/lib/data/pokeballs";
-import { getItemSpriteUrl } from "@/lib/data/items";
+import { getItemSpriteUrl, LINK_STONE_MIN_LEVEL } from "@/lib/data/items";
+import { getCardSpriteUrl } from "@/lib/data/cards";
+import { getShowdownTrainerUrl } from "@/lib/data/showdownTrainers";
 import { getRelic, type RelicId } from "@/lib/data/relics";
 import {
   getStarterSpriteUrl,
@@ -44,6 +46,7 @@ const NODE_ORDER: MapNodeType[] = [
   "CHEST",
   "SHOP",
   "REST",
+  "CASINO",
   "BOSS",
 ];
 
@@ -89,8 +92,12 @@ export function HowToPlay({ onBack, backLabel = "Back" }: HowToPlayProps) {
         </Chapter>
 
         <Chapter number={3} title="What is on the map" figure={<NodeLegend />}>
-          Seven kinds of stop. The dark tower at the top of every act is the
-          boss — beating it opens the next act on a brand new map.
+          Eight kinds of stop. The dark tower at the top of every act is the
+          boss — beating it opens the next act on a brand new map. Each region
+          has its own named boss, the same one every run, matched to that
+          region&apos;s type and tougher than the last. Ordinary fights scale to
+          your team&apos;s average level, so benching your best Pokémon does not
+          make the road any easier.
         </Chapter>
 
         <Chapter number={4} title="Battles" figure={<BattleFigure />}>
@@ -110,7 +117,11 @@ export function HowToPlay({ onBack, backLabel = "Back" }: HowToPlayProps) {
           Experience comes from every win and levels come fast. Reach a
           species&apos; evolution level and it evolves on the spot, with the
           stat jump that implies. Evolutions that need a stone instead wait
-          until you buy or find one.
+          until you buy or find one. The ones that would normally need a trade
+          partner, a specific cave or a pile of coins — Machamp, Gengar,
+          Alakazam, Magnezone, Gholdengo — need the Link Stone, which the shop
+          stocks once someone on your team hits Lv{" "}
+          {LINK_STONE_MIN_LEVEL}.
         </Chapter>
 
         <Chapter number={6} title="Relics" figure={<RelicFigure />}>
@@ -123,7 +134,10 @@ export function HowToPlay({ onBack, backLabel = "Back" }: HowToPlayProps) {
         <Chapter number={7} title="Catching bosses" figure={<BallFigure />}>
           Only bosses can be caught, and only after you beat them. Throw a ball
           and the odds depend on which one — buy them at any shop before you
-          need them. A caught boss joins your team, up to six.
+          need them. A caught boss joins your team, up to six. EXP Share is on
+          from the start, so a fresh catch earns half the EXP of every battle
+          without having to fight one; switch it off in the team panel if you
+          would rather funnel it all into the Pokémon on the field.
         </Chapter>
 
         <Chapter number={8} title="Coins and rests" figure={<ShopFigure />}>
@@ -133,7 +147,26 @@ export function HowToPlay({ onBack, backLabel = "Back" }: HowToPlayProps) {
           permanent stat boost, or talk to whoever is sitting there.
         </Chapter>
 
-        <Chapter number={9} title="One Revive" figure={<ReviveFigure />}>
+        <Chapter number={9} title="Unknown stops" figure={<EventFigure />}>
+          Somebody is always on the road, and most of them want something.
+          Some of these are one-off encounters; others remember what you chose
+          and come back for it an act or two later, better or worse disposed
+          towards you. A few choices are settled with a d20 roll, and the
+          modifiers come from things you already have: who owes you a favour,
+          what your Pokémon is, what you are carrying. No stop repeats within a
+          run.
+        </Chapter>
+
+        <Chapter number={10} title="The casino" figure={<CasinoFigure />}>
+          One visit per act, three rounds a visit. The table is either the slot
+          machine — a 3x3 grid where you pick one, three or five paylines and
+          stake per line — or blackjack, where the dealer stands on seventeen
+          and a natural pays three to two. The machine keeps about a third of
+          everything it takes; the card table keeps far less, because there you
+          are allowed to make decisions.
+        </Chapter>
+
+        <Chapter number={11} title="One Revive" figure={<ReviveFigure />}>
           Every run starts with a single Revive. Lose a battle and it is spent
           automatically — you wake up at the last campfire you visited in this
           act, at half HP and minus half your coins, and walk the stretch again.
@@ -454,6 +487,72 @@ function ShopFigure() {
         <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--ink-soft)]">
           <GameIcon name="coins" className="h-3.5 w-3.5" />
           spend them well
+        </span>
+      </div>
+    </Figure>
+  );
+}
+
+/**
+ * Soru işaretli durakların yüzü.
+ *
+ * Gerçek Showdown trainer portreleri — kılavuzdaki insanlar oyunda karşına
+ * çıkacak olanların aynısı, temsilî bir çizim değil.
+ */
+function EventFigure() {
+  const faces = ["rocketgrunt", "ruinmaniac", "acetrainer", "nurse"];
+  return (
+    <Figure>
+      <div className="flex flex-col items-center gap-1.5">
+        <div className="flex items-end gap-1">
+          {faces.map((id) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={id}
+              src={getShowdownTrainerUrl(id)}
+              alt=""
+              className="h-12 w-12 object-contain [image-rendering:pixelated]"
+            />
+          ))}
+        </div>
+        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--ink-soft)]">
+          <GameIcon name="question" className="h-3.5 w-3.5" />
+          they remember what you chose
+        </span>
+      </div>
+    </Figure>
+  );
+}
+
+/** Kumarhanenin iki masası: makara sembolleri ve gerçek kart görselleri. */
+function CasinoFigure() {
+  return (
+    <Figure>
+      <div className="flex flex-col items-center gap-2">
+        <div className="flex items-center gap-2">
+          {["poke-ball", "great-ball", "master-ball"].map((id) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={id}
+              src={getItemSpriteUrl(id)}
+              alt=""
+              className="h-7 w-7 object-contain [image-rendering:pixelated]"
+            />
+          ))}
+          <span className="px-1 text-[var(--ink-faint)]">or</span>
+          {["as", "kh"].map((id, index) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={id}
+              src={getCardSpriteUrl(id)}
+              alt=""
+              className="h-11 w-8 rounded-sm object-contain shadow-sm"
+              style={{ marginLeft: index === 1 ? -14 : 0 }}
+            />
+          ))}
+        </div>
+        <span className="text-[11px] font-semibold text-[var(--ink-soft)]">
+          one visit per act, three rounds
         </span>
       </div>
     </Figure>

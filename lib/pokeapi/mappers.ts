@@ -436,6 +436,35 @@ export function findAutomaticEvolution(
   );
 }
 
+/**
+ * Link Stone'un tetikleyebileceği evrimler.
+ *
+ * Mainline'da bir Pokémon'u evrimleştirmenin bizim modelleyemediğimiz üç yolu
+ * var: TAKAS (Machoke, Haunter, Kadabra…), BELİRLİ BİR YER (Magneton →
+ * Magnezone, Mt. Coronet'te level atlamak) ve türe özel sayaçlar (Gimmighoul
+ * → Gholdengo, 999 madeni para). Tek oyunculu bir tahta oyununda üçünün de
+ * karşılığı yok, yani bu türler evrimlerine HİÇ ulaşamıyordu.
+ *
+ * Link Stone tam bu boşluğu dolduruyor: otomatik (level) yoldan da, taş
+ * yolundan da ulaşılamayan her evrim adımı buradan geçiyor. Kural liste
+ * tutmakla değil ELEMEYLE yazıldı — yeni nesiller geldiğinde de kendiliğinden
+ * doğru kalıyor.
+ *
+ * Dallanan zincirlerde birden fazla adım dönebilir (oyuncu hangisini
+ * istediğini seçer).
+ */
+export function findLinkEvolutions(
+  chain: EvolutionChain,
+  speciesId: number,
+): EvolutionStep[] {
+  return chain.steps.filter(
+    (step) =>
+      step.fromSpeciesId === speciesId &&
+      !step.isAutomatic &&
+      step.itemName === null,
+  );
+}
+
 /** Belirli bir taşla tetiklenebilecek evrimi bulur (dükkan / legendary kasa için). */
 export function findItemEvolution(
   chain: EvolutionChain,

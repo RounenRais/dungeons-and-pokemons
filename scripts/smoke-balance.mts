@@ -10,7 +10,9 @@ import {
   type BattleState,
 } from '../lib/battle';
 import { STARTERS } from '../lib/data/starters';
-import { getBstRange, createWildEnemy, getEnemyIv, getEnemySkill, getLevelBonus, getMovesetQuality, type EncounterKind } from '../lib/game/enemy';
+import { getBstRange, createBossEnemy, createWildEnemy, getBossFor, getEnemyIv, getEnemySkill, getLevelBonus, getMovesetQuality, type EncounterKind } from '../lib/game/enemy';
+import { getBossPremium, FIRST_LAP_BOSSES, LEGENDARY_LAP_BOSSES } from '../lib/data/bosses';
+import { getZoneIndex } from '../lib/game/zones';
 import { createTeamMember } from '../lib/game/team';
 import { evolveToLevel } from '../lib/game/progression';
 import { getMoves, getPokemon, selectStartingMoveIds } from '../lib/pokeapi';
@@ -51,11 +53,24 @@ function pickPlayerMove(player: Combatant, enemy: Combatant): Move {
   return best;
 }
 
-async function simulateTile(tileIndex: number, playerLevel: number, kind: EncounterKind) {
+async function simulateTile(
+  tileIndex: number,
+  playerLevel: number,
+  kind: EncounterKind,
+  /** Tip eşleşmesi koruması açık mı? Kapalıysa eski (korumasız) davranış ölçülür. */
+  matchupGuard = true,
+) {
   const isBoss = kind !== 'wild';
   let wins = 0;
   let totalTurns = 0;
   const losses: string[] = [];
+  // Starter tipine göre kırılım: çarkın döndüğü yerin kaderi belirlememesi
+  // gerekiyor, o yüzden ortalamaya değil üç tipin BİRBİRİNE bakıyoruz.
+  const byType: Record<string, { wins: number; total: number }> = {
+    grass: { wins: 0, total: 0 },
+    fire: { wins: 0, total: 0 },
+    water: { wins: 0, total: 0 },
+  };
 
   for (let i = 0; i < SAMPLES_PER_TILE; i += 1) {
     const starter = STARTERS[i % STARTERS.length];
@@ -67,11 +82,19 @@ async function simulateTile(tileIndex: number, playerLevel: number, kind: Encoun
     const pokemon = grown.pokemon;
     const moves = await getMoves(selectStartingMoveIds(pokemon, playerLevel));
     const member = createTeamMember(pokemon, { level: playerLevel, moves, isShiny: false });
-    const enemy = await createWildEnemy(tileIndex, {
-      playerLevel,
-      playerBst: pokemon.baseStatTotal,
-      kind,
-    });
+    // Boss artık kadrolu: tür bölgeden, level oyuncudan geliyor.
+    const enemy =
+      kind === 'boss'
+        ? await createBossEnemy(tileIndex, {
+            playerLevel,
+            playerBst: pokemon.baseStatTotal,
+          })
+        : await createWildEnemy(tileIndex, {
+            playerLevel,
+            playerBst: pokemon.baseStatTotal,
+            kind,
+            playerTypes: matchupGuard ? pokemon.types : [],
+          });
 
     let state: BattleState = startBattle({
       playerPokemon: pokemon,
@@ -91,11 +114,32 @@ async function simulateTile(tileIndex: number, playerLevel: number, kind: Encoun
     }
 
     totalTurns += turns;
+    byType[starter.type].total += 1;
+    if (state.outcome === 'win') byType[starter.type].wins += 1;
     if (state.outcome === 'win') wins += 1;
     else losses.push(`${pokemon.displayName}(${pokemon.baseStatTotal}) < ${enemy.pokemon.displayName} Lv${enemy.member.level}(${enemy.pokemon.baseStatTotal})`);
   }
 
-  return { wins, rate: wins / SAMPLES_PER_TILE, avgTurns: totalTurns / SAMPLES_PER_TILE, losses };
+  const rateByType = Object.fromEntries(
+    Object.entries(byType).map(([type, tally]) => [
+      type,
+      tally.total === 0 ? 0 : tally.wins / tally.total,
+    ]),
+  ) as Record<'grass' | 'fire' | 'water', number>;
+
+  return {
+    wins,
+    rate: wins / SAMPLES_PER_TILE,
+    avgTurns: totalTurns / SAMPLES_PER_TILE,
+    losses,
+    rateByType,
+  };
+}
+
+/** Üç starter tipi arasındaki en büyük kazanma oranı uçurumu. */
+function typeSpread(rates: Record<'grass' | 'fire' | 'water', number>): number {
+  const values = Object.values(rates);
+  return Math.max(...values) - Math.min(...values);
 }
 
 // BST aralıkları mantıklı mı?
@@ -116,11 +160,19 @@ check('Güçlü oyuncu güçlü rakiple eşleşiyor', getBstRange(530, 1).max > 
 // umutsuz olmamalı.
 const bossRates: number[] = [];
 
-for (const [tileIndex, playerLevel, kind] of [[1, 5, 'wild'], [15, 12, 'wild'], [35, 22, 'wild'], [6, 7, 'boss'], [45, 28, 'boss']] as const) {
+// Boss satirlarindaki kareler GERCEK boss kareleri: her act'in son sirasi,
+// yani 12, 25, 38, 51... Onceden 6 ve 45 olculuyordu ve o karelerde hicbir
+// zaman boss olmuyor — olculen sey "act 0 boss'u" degil, o boss'un yarim act
+// once nasil olacagiydi. Tempo simulasyonu (scripts/sim-run.mts) gercek boss
+// karesinde cok daha dusuk bir oran gorunce fark ortaya cikti.
+const BOSS_TILES = [12, 51] as const;
+
+for (const [tileIndex, playerLevel, kind] of [[1, 5, 'wild'], [15, 12, 'wild'], [35, 22, 'wild'], [BOSS_TILES[0], 14, 'boss'], [BOSS_TILES[1], 30, 'boss']] as const) {
   const isBoss = kind !== 'wild';
   const result = await simulateTile(tileIndex, playerLevel, kind);
   const label = `${isBoss ? 'BOSS ' : ''}kare ${tileIndex} (oyuncu Lv${playerLevel})`;
   console.log(`\nINFO  ${label}: %${(result.rate * 100).toFixed(0)} kazanma, ortalama ${result.avgTurns.toFixed(1)} tur`);
+  console.log(`      starter tipine göre: çimen %${(result.rateByType.grass * 100).toFixed(0)} | ateş %${(result.rateByType.fire * 100).toFixed(0)} | su %${(result.rateByType.water * 100).toFixed(0)}`);
   if (result.losses.length > 0) console.log('      örnek kayıplar: ' + result.losses.slice(0, 3).join(' | '));
 
   if (isBoss) bossRates.push(result.rate);
@@ -131,6 +183,39 @@ for (const [tileIndex, playerLevel, kind] of [[1, 5, 'wild'], [15, 12, 'wild'], 
   check(`${label} kazanma oranı %${(min * 100).toFixed(0)}-%${(max * 100).toFixed(0)} arasında`, result.rate >= min && result.rate <= max, `%${(result.rate * 100).toFixed(0)}`);
 }
 
+// --- Tip eşleşmesi adaleti -------------------------------------------------
+//
+// Açılış aktında çarkın döndüğü yer oyuncunun kaderini belirlememeli. Koruma
+// kapalıyken çimen bir starter, normal temalı ilk aktta Peck bilen kuşlarla
+// eşleşip belirgin biçimde geride kalıyordu; açıkken üç tip aynı bantta.
+{
+  const guarded = await simulateTile(1, 5, 'wild', true);
+  const unguarded = await simulateTile(1, 5, 'wild', false);
+
+  console.log(
+    `
+INFO  kare 1 tip uçurumu — koruma açık: ${(typeSpread(guarded.rateByType) * 100).toFixed(0)} puan ` +
+      `(çimen %${(guarded.rateByType.grass * 100).toFixed(0)}) | kapalı: ${(typeSpread(unguarded.rateByType) * 100).toFixed(0)} puan ` +
+      `(çimen %${(unguarded.rateByType.grass * 100).toFixed(0)})`,
+  );
+
+  check(
+    'Koruma tip uçurumunu daraltıyor',
+    typeSpread(guarded.rateByType) <= typeSpread(unguarded.rateByType),
+    `${(typeSpread(unguarded.rateByType) * 100).toFixed(0)} → ${(typeSpread(guarded.rateByType) * 100).toFixed(0)} puan`,
+  );
+  check(
+    'Çimen starter açılışta geride kalmıyor',
+    guarded.rateByType.grass >= MIN_WIN_RATE,
+    `%${(guarded.rateByType.grass * 100).toFixed(0)}`,
+  );
+  check(
+    'Açılışta hiçbir starter tipi 25 puandan fazla geride değil',
+    typeSpread(guarded.rateByType) <= 0.25,
+    `${(typeSpread(guarded.rateByType) * 100).toFixed(0)} puan`,
+  );
+}
+
 check('Boss zorluğu koşu ilerledikçe artıyor', bossRates[0] > bossRates[bossRates.length - 1], `%${(bossRates[0] * 100).toFixed(0)} → %${(bossRates[bossRates.length - 1] * 100).toFixed(0)}`);
 
 // Ölçeklemenin yönü doğru mu?
@@ -138,6 +223,43 @@ check('Geç boss erken bosstan daha çok level avantajı alıyor', getLevelBonus
 check('Geç düşman daha iyi IV ile geliyor', getEnemyIv('wild', 45) > getEnemyIv('wild', 2), `${getEnemyIv('wild', 2)} → ${getEnemyIv('wild', 45)}`);
 check('Geç düşman daha akıllı', getEnemySkill('wild', 45) > getEnemySkill('wild', 2), `${getEnemySkill('wild', 2).toFixed(2)} → ${getEnemySkill('wild', 45).toFixed(2)}`);
 check('Geç düşmanın hareket seti daha iyi', getMovesetQuality('wild', 45) > getMovesetQuality('wild', 2), `${getMovesetQuality('wild', 2).toFixed(2)} → ${getMovesetQuality('wild', 45).toFixed(2)}`);
+
+// --- Kadrolu boss'lar ------------------------------------------------------
+{
+  check(
+    'Her bolgenin bir boss u var',
+    FIRST_LAP_BOSSES.length === LEGENDARY_LAP_BOSSES.length,
+    `${FIRST_LAP_BOSSES.length} / ${LEGENDARY_LAP_BOSSES.length}`,
+  );
+  check(
+    'Ayni bolge her kosuda ayni boss u veriyor',
+    getBossFor(12).speciesId === getBossFor(12).speciesId &&
+      getBossFor(12).speciesId === FIRST_LAP_BOSSES[0].speciesId,
+    `kare 12 -> ${getBossFor(12).title}`,
+  );
+  check(
+    'Sonraki act farkli bir boss',
+    getBossFor(25).speciesId !== getBossFor(12).speciesId,
+    `${getBossFor(12).title} -> ${getBossFor(25).title}`,
+  );
+  check(
+    'Ikinci turda efsanevi kadro devreye giriyor',
+    getBossFor(13 * 11).speciesId === LEGENDARY_LAP_BOSSES[0].speciesId,
+    `${getBossFor(13 * 11).title}`,
+  );
+  check(
+    'Guc primi kosu boyunca eriyor',
+    getBossPremium(0) > getBossPremium(1),
+    `%${(getBossPremium(0) * 100).toFixed(0)} -> %${(getBossPremium(1) * 100).toFixed(0)}`,
+  );
+  console.log(
+    '\nINFO  boss kadrosu: ' +
+      FIRST_LAP_BOSSES.map((boss, index) => `act${index} #${boss.speciesId}`).join(' | '),
+  );
+  console.log(
+    `INFO  zone index kontrolu: kare 12 -> act ${getZoneIndex(12)}, kare 25 -> act ${getZoneIndex(25)}`,
+  );
+}
 
 console.log(failures === 0 ? '\nTÜM KONTROLLER GEÇTİ' : `\n${failures} KONTROL BAŞARISIZ`);
 process.exit(failures === 0 ? 0 : 1);

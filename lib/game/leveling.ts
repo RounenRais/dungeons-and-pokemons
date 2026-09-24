@@ -76,6 +76,17 @@ export const XP_RATE = 1;
 /** Boss savaşları bir buçuk katı XP verir. */
 export const BOSS_XP_MULTIPLIER = 1.5;
 
+/**
+ * EXP Share açıkken savaşa girmeyen takım üyelerinin aldığı pay.
+ *
+ * Mainline'daki (Gen 6+) EXP Share da yarım pay veriyor. Bizde asıl derdi
+ * şu: boss'tan yeni yakalanan bir Pokémon oyuncunun onlarca level gerisinde
+ * geliyor ve onu yetiştirmenin tek yolu, henüz hiçbir şeye dayanamayacakken
+ * savaşa sokmak oluyordu. Yarım pay, yedeklerin geride kalmasını engelliyor
+ * ama sahada savaşan Pokémon'u da hâlâ önde tutuyor.
+ */
+export const EXP_SHARE_RATE = 0.5;
+
 /** Bir savaştan kazanılan XP. */
 export function calculateXpGain(
   enemyBaseExperience: number,

@@ -48,6 +48,24 @@ export interface MapEvent {
   options: EventOption[];
 }
 
+/**
+ * Henüz görülmemiş bir olay seçer.
+ *
+ * Eskiden havuzdan düz rastgele seçiliyordu ve bunun sonucu bir koşuda aynı
+ * sahneyi üç kez görmekti — on sekiz olay varken bile, çünkü rastgelelik
+ * hafızasız. Artık görülenler eleniyor; hepsi görüldüyse havuz sıfırlanıyor
+ * (uzun bir koşuda "olay yok" demek yerine tekrar etmek daha iyi).
+ */
+export function pickUnseenEvent(
+  seenIds: readonly string[],
+  random: () => number = Math.random,
+): MapEvent {
+  const seen = new Set(seenIds);
+  const unseen = MAP_EVENTS.filter((event) => !seen.has(event.id));
+  const pool = unseen.length > 0 ? unseen : MAP_EVENTS;
+  return pool[Math.min(Math.floor(random() * pool.length), pool.length - 1)];
+}
+
 export const MAP_EVENTS: MapEvent[] = [
   {
     id: "abandoned-pack",

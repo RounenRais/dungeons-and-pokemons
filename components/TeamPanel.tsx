@@ -12,10 +12,13 @@ import { calculateMaxHp } from "@/lib/game/stats";
 import { getMemberName } from "@/lib/game/team";
 import {
   findItemEvolution,
+  findLinkEvolutions,
   getEvolutionChain,
   getPokemonForSpecies,
   getSpecies,
+  toDisplayName,
 } from "@/lib/pokeapi";
+import { LINK_STONE } from "@/lib/data/items";
 import type { InventoryEntry, Pokemon, TeamMember } from "@/lib/types";
 
 /** Bir üyeye uygulanabilecek taş evrimi. */
@@ -23,6 +26,14 @@ interface StoneEvolution {
   instanceId: string;
   stoneId: string;
   toSpeciesName: string;
+  /**
+   * Dallanan zincirlerde hangi dala gidildiğini yazmak için.
+   *
+   * Sıradan taşlarda bir türün o taşla tek bir evrimi var, ama Link Stone
+   * birden fazla dal açabiliyor (Eevee'nin mutluluk evrimleri gibi) — o zaman
+   * düğmeler birbirinden ayırt edilebilir olmalı.
+   */
+  toDisplayName: string;
 }
 
 interface TeamPanelProps {
@@ -44,6 +55,9 @@ interface TeamPanelProps {
     pokemon: Pokemon,
     log: string,
   ) => void;
+  /** EXP Share açık mı? */
+  expShare: boolean;
+  onToggleExpShare: (enabled: boolean) => void;
   onClose: () => void;
 }
 
@@ -52,6 +66,8 @@ export function TeamPanel({
   activeIndex,
   pokedex,
   inventory,
+  expShare,
+  onToggleExpShare,
   onSetActive,
   onUseItem,
   onEvolveWithStone,
@@ -80,7 +96,10 @@ export function TeamPanel({
             getShopItem(entry.itemId)?.effect.kind === "stone",
         )
         .map((entry) => entry.itemId);
-      if (stoneIds.length === 0) return [];
+      const hasLinkStone = inventory.some(
+        (entry) => entry.itemId === LINK_STONE.id && entry.quantity > 0,
+      );
+      if (stoneIds.length === 0 && !hasLinkStone) return [];
 
       const species = await getSpecies(pokemon.speciesId);
       if (species.evolutionChainId === null) return [];
@@ -94,9 +113,24 @@ export function TeamPanel({
             instanceId: member.instanceId,
             stoneId,
             toSpeciesName: step.toSpeciesName,
+            toDisplayName: toDisplayName(step.toSpeciesName),
           });
         }
       }
+
+      // Link Stone slug eşleşmesiyle değil kuralla çalışıyor: başka hiçbir
+      // yolla ulaşılamayan evrimlerin tamamını açıyor (bkz. findLinkEvolutions).
+      if (hasLinkStone) {
+        for (const step of findLinkEvolutions(chain, pokemon.speciesId)) {
+          options.push({
+            instanceId: member.instanceId,
+            stoneId: LINK_STONE.id,
+            toSpeciesName: step.toSpeciesName,
+            toDisplayName: toDisplayName(step.toSpeciesName),
+          });
+        }
+      }
+
       return options;
     };
 
@@ -154,6 +188,7 @@ export function TeamPanel({
       entry.quantity > 0 &&
       item !== null &&
       item.effect.kind !== "stone" &&
+      item.effect.kind !== "link-stone" &&
       item.effect.kind !== "chest"
     );
   });
@@ -164,6 +199,37 @@ export function TeamPanel({
         <h2 className="text-xl font-bold">Team</h2>
         <span className="text-sm text-[var(--ink-faint)]">{team.length}/6</span>
       </header>
+
+      {/*
+        EXP Share anahtarı. Burada, çünkü etkilediği şey tam olarak bu liste:
+        açıkken savaşa girmeyen üyeler de savaş başına yarım pay XP alıyor.
+      */}
+      <button
+        type="button"
+        onClick={() => onToggleExpShare(!expShare)}
+        aria-pressed={expShare}
+        className="mt-3 flex w-full items-center justify-between gap-3 rounded-xl border border-[var(--ink-line)] bg-[var(--paper-2)] px-3 py-2 text-left transition hover:bg-[var(--paper-3)]"
+      >
+        <span>
+          <span className="block text-sm font-semibold">EXP Share</span>
+          <span className="block text-[11px] text-[var(--ink-faint)]">
+            {expShare
+              ? "Benched Pokémon earn half EXP from every battle."
+              : "Only the Pokémon that fought earns EXP."}
+          </span>
+        </span>
+        <span
+          className={`relative h-6 w-11 shrink-0 rounded-full transition ${
+            expShare ? "bg-emerald-500" : "bg-[var(--paper-3)]"
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${
+              expShare ? "left-[22px]" : "left-0.5"
+            }`}
+          />
+        </span>
+      </button>
 
       {/* Üye listesi */}
       <ul className="mt-4 grid grid-cols-3 gap-2">
@@ -316,12 +382,12 @@ export function TeamPanel({
           {stoneOptions.length > 0 && (
             <div className="mt-3">
               <p className="text-[10px] uppercase tracking-widest text-[var(--ink-faint)]">
-                Evolution stone
+                Evolve
               </p>
               <div className="mt-1 flex flex-wrap gap-1.5">
                 {stoneOptions.map((option) => (
                   <button
-                    key={option.stoneId}
+                    key={`${option.stoneId}-${option.toSpeciesName}`}
                     type="button"
                     disabled={busy}
                     onClick={() => void applyStone(option)}
@@ -333,7 +399,7 @@ export function TeamPanel({
                       alt=""
                       className="h-4 w-4 [image-rendering:pixelated]"
                     />
-                    Evolve with {getItemLabel(option.stoneId)}
+                    {option.toDisplayName} · {getItemLabel(option.stoneId)}
                   </button>
                 ))}
               </div>

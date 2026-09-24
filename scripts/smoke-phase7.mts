@@ -12,7 +12,9 @@ import { getBall, POKE_BALLS } from '../lib/data/pokeballs';
 import { buildTmStock } from '../lib/game/shop';
 import { createRandom } from '../lib/game/rng';
 import { createTeamMember, MAX_TEAM_SIZE } from '../lib/game/team';
-import { getMoves, getPokemon, getSpecies, selectStartingMoveIds } from '../lib/pokeapi';
+import { findAutomaticEvolution, findItemEvolution, findLinkEvolutions, getEvolutionChain, getMoves, getPokemon, getSpecies, selectStartingMoveIds } from '../lib/pokeapi';
+import { LINK_STONE, LINK_STONE_MIN_LEVEL } from '../lib/data/items';
+import { getBall as getBallDef } from '../lib/data/pokeballs';
 import type { TeamMember } from '../lib/types';
 
 let failures = 0;
@@ -43,7 +45,7 @@ check('İksirler savaşta kullanılabilir', getShopItem('potion')?.usableInBattl
 check('Diriltme savaşta kullanılamaz', getShopItem('revive')?.usableInBattle, false);
 check('Taşlar savaşta kullanılamaz', getShopItem('fire-stone')?.usableInBattle, false);
 check('Güçlü TM daha pahalı', getTmPrice(120, false) > getTmPrice(40, false), true);
-check('Durum TM\'i sabit fiyatlı', getTmPrice(null, true), 400);
+check('Durum TM\'i sabit fiyatlı', getTmPrice(null, true), 325);
 
 // --- Eşya etkileri ---
 const hurt: TeamMember = { ...base, currentHp: 10 };
@@ -183,6 +185,99 @@ const needed5 = getXpToNextLevel(5, 'medium-slow');
 console.log(`INFO  Lv5 savaşı ${xpAt5} XP veriyor; Lv5→6 için ${needed5} gerekiyor`);
 check('Erken bir savaş en az bir level atlatıyor', xpAt5 >= needed5, true);
 check('Boss daha çok XP veriyor', calculateXpGain(60, 5, true) > xpAt5, true);
+
+// --- Link Stone ------------------------------------------------------------
+//
+// Tek oyunculu bir oyunda takas yok, Mt. Coronet yok, 999 madeni para yok —
+// yani bu evrimler oyuna hiç girmiyordu. Link Stone'un işi tam olarak bunları
+// açmak; kontroller de "acilmasi gerekenler acildi mi, acilmamasi gerekenler
+// kapali mi" diye soruyor.
+{
+  const linkStoneItem = getShopItem(LINK_STONE.id);
+  check('Link Stone katalogda', linkStoneItem !== null, true);
+  check('Link Stone level kilitli', linkStoneItem?.minLevel, LINK_STONE_MIN_LEVEL);
+  check('Kilit 40. levelda aciliyor', LINK_STONE_MIN_LEVEL, 40);
+
+  // Takas evrimleri
+  for (const [name, expected] of [
+    ['machoke', 'machamp'],
+    ['haunter', 'gengar'],
+    ['kadabra', 'alakazam'],
+    ['graveler', 'golem'],
+  ] as [string, string][]) {
+    const pokemon = await getPokemon(name);
+    const species = await getSpecies(pokemon.speciesId);
+    const chain = await getEvolutionChain(species.evolutionChainId!);
+    const steps = findLinkEvolutions(chain, pokemon.speciesId);
+    check(
+      `${name} Link Stone ile evrimlesiyor`,
+      steps.map((step) => step.toSpeciesName).includes(expected),
+      true,
+    );
+  }
+
+  // Yere/sayaca bagli evrimler — kullanicinin ozellikle istedigi ikisi.
+  for (const [name, expected] of [
+    ['magneton', 'magnezone'],
+    ['gimmighoul', 'gholdengo'],
+  ] as [string, string][]) {
+    const pokemon = await getPokemon(name);
+    const species = await getSpecies(pokemon.speciesId);
+    const chain = await getEvolutionChain(species.evolutionChainId!);
+    const steps = findLinkEvolutions(chain, pokemon.speciesId);
+    check(
+      `${name} Link Stone ile evrimlesiyor`,
+      steps.map((step) => step.toSpeciesName).includes(expected),
+      true,
+    );
+  }
+
+  // Link Stone level ve tas evrimlerini GASP ETMEMELI.
+  {
+    const charmander = await getPokemon('charmander');
+    const species = await getSpecies(charmander.speciesId);
+    const chain = await getEvolutionChain(species.evolutionChainId!);
+    check(
+      'Level evrimi Link Stone a dusmuyor',
+      findLinkEvolutions(chain, charmander.speciesId).length,
+      0,
+    );
+    check(
+      'Level evrimi kendi yolunda duruyor',
+      findAutomaticEvolution(chain, charmander.speciesId, 16)?.toSpeciesName,
+      'charmeleon',
+    );
+  }
+  {
+    const vulpix = await getPokemon('vulpix');
+    const species = await getSpecies(vulpix.speciesId);
+    const chain = await getEvolutionChain(species.evolutionChainId!);
+    check(
+      'Tas evrimi Link Stone a dusmuyor',
+      findLinkEvolutions(chain, vulpix.speciesId).length,
+      0,
+    );
+    check(
+      'Tas evrimi kendi yolunda duruyor',
+      findItemEvolution(chain, vulpix.speciesId, 'fire-stone')?.toSpeciesName,
+      'ninetales',
+    );
+  }
+}
+
+// --- Ucuzlayan katalog -----------------------------------------------------
+{
+  check('Poke Ball 125 coin', getBallDef('poke-ball')?.price, 125);
+  const before = { 'great-ball': 400, 'ultra-ball': 900, 'master-ball': 6000 };
+  for (const [id, old] of Object.entries(before)) {
+    const price = getBallDef(id)?.price ?? 0;
+    check(`${id} ucuzladi`, price < old, true);
+  }
+  check('Iksir ucuzladi', (getShopItem('potion')?.price ?? 0) < 120, true);
+  check('Tas ucuzladi', (getShopItem('fire-stone')?.price ?? 0) < 1400, true);
+  check('Kasa ucuzladi', (getShopItem('chest-legendary')?.price ?? 0) < 4000, true);
+  check('TM ucuzladi', getTmPrice(90, false) < Math.round(200 + 90 * 8), true);
+}
 
 console.log(failures === 0 ? '\nTÜM KONTROLLER GEÇTİ' : `\n${failures} KONTROL BAŞARISIZ`);
 process.exit(failures === 0 ? 0 : 1);

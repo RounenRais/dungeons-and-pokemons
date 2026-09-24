@@ -1362,6 +1362,22 @@ function performMove(
   events.push({ kind: "move-used", side: attacker.side, move });
   attacker.volatile.lastMoveId = move.id;
 
+  // Fake Out / First Impression: sadece sahadaki ilk turda işler.
+  if (trait?.firstTurnOnly === true && attacker.volatile.turnsActive > 1) {
+    events.push({ kind: "fail", side: attacker.side });
+    return;
+  }
+
+  // Focus Punch: bu turda vurulduysa konsantrasyon bozulur.
+  if (trait?.failIfHurt === true && attacker.volatile.hurtThisTurn) {
+    events.push({
+      kind: "message",
+      side: attacker.side,
+      text: "lost its focus and could not move!",
+    });
+    return;
+  }
+
   // Sucker Punch: rakip o tur saldırmıyorsa boşa gider.
   if (trait?.suckerPunch === true) {
     const foeAttacks =
@@ -1372,6 +1388,26 @@ function performMove(
       events.push({ kind: "fail", side: attacker.side });
       return;
     }
+  }
+
+  // Upper Hand: sadece rakibin öncelikli bir saldırısını keser.
+  if (trait?.priorityCounter === true) {
+    const foePriorityAttack =
+      context.opponentMove !== null &&
+      context.opponentMove.category !== "status" &&
+      context.opponentMove.priority > 0 &&
+      !context.opponentMoved;
+    if (!foePriorityAttack) {
+      events.push({ kind: "fail", side: attacker.side });
+      return;
+    }
+  }
+
+  // Explosion / Memento: hamle ne olursa olsun kullanıcı bedelini öder.
+  // Mainline sırası da bu — önce kullanıcı bayılır, sonra hasar uygulanır.
+  if (trait?.selfFaint === true) {
+    attacker.currentHp = 0;
+    events.push({ kind: "hp-set", side: attacker.side, newHp: 0 });
   }
 
   // Protect / Detect: hedef korunuyorsa hamle boşa gider.
@@ -2074,6 +2110,9 @@ function applyEndOfTurn(
 /** Turun başında sıfırlanan geçici bayraklar. */
 function resetTurnFlags(state: BattleState): void {
   for (const combatant of [state.player, state.enemy]) {
+    // Sahadaki kaçıncı tur: ilk turda 1 olur, değişimden sonra tekrar 1'den
+    // başlar (yeni combatant yeni volatile ile geliyor).
+    combatant.volatile.turnsActive += 1;
     combatant.flinched = false;
     combatant.volatile.movedThisTurn = false;
     combatant.volatile.hurtThisTurn = false;

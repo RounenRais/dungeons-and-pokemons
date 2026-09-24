@@ -120,6 +120,18 @@ export interface MoveTrait {
   dreamEater?: true;
   /** Rakip o tur saldırmıyorsa başarısız olur. */
   suckerPunch?: true;
+  /**
+   * Sadece sahaya çıktıktan sonraki ilk turda işler (Fake Out).
+   * Mainline'daki kural bu; olmadığında Fake Out her tur irkilten,
+   * öncelikli, bedava bir hamleye dönüşüyor.
+   */
+  firstTurnOnly?: true;
+  /** Bu turda saldırı yemişse başarısız olur (Focus Punch). */
+  failIfHurt?: true;
+  /** Hamleden sonra kullanıcı bayılır (Explosion, Memento). */
+  selfFaint?: true;
+  /** Rakip o tur ÖNCELİKLİ bir saldırı yapmıyorsa başarısız olur (Upper Hand). */
+  priorityCounter?: true;
   /** Hasar yerine hedefi iyileştirebilir (Present). */
   present?: true;
   /** Gücü her kullanımda zar atarak belirlenir (Magnitude). */
@@ -368,6 +380,16 @@ export const MOVE_TRAITS: Record<string, MoveTrait> = {
   "dream-eater": { dreamEater: true },
   "sucker-punch": { suckerPunch: true },
   thunderclap: { suckerPunch: true },
+  "upper-hand": { priorityCounter: true },
+  "fake-out": { firstTurnOnly: true },
+  "first-impression": { firstTurnOnly: true },
+  "focus-punch": { failIfHurt: true },
+
+  // --- Kullanıcısını bayıltanlar ---
+  explosion: { selfFaint: true },
+  "self-destruct": { selfFaint: true },
+  "misty-explosion": { selfFaint: true },
+  memento: { selfFaint: true },
   present: { present: true },
   magnitude: { magnitude: true },
 

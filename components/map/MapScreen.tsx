@@ -14,12 +14,15 @@ import { MapIcon } from "./MapIcons";
 import { RelicSatchel } from "./RelicSatchel";
 import { Hud } from "@/components/Hud";
 import { TeamPanel } from "@/components/TeamPanel";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { RelicChoice } from "@/components/RelicChoice";
 import {
   ChestOpening,
   type ChestResult,
 } from "@/components/chest/ChestOpening";
 import { ShopScreen } from "@/components/shop/ShopScreen";
+import { CasinoScreen } from "@/components/casino/CasinoScreen";
+import { StoryEventRunner } from "@/components/story/StoryEventRunner";
 import { startBattle } from "@/lib/battle";
 import { getOfferableRelics, getRelic, type RelicId } from "@/lib/data/relics";
 import {
@@ -28,12 +31,17 @@ import {
   type CampVisitor,
 } from "@/lib/game/campVisitors";
 import {
-  MAP_EVENTS,
+  pickUnseenEvent,
   type EventOutcome,
   type MapEvent,
 } from "@/lib/data/mapEvents";
 import type { ShopItem } from "@/lib/data/shopItems";
-import { createWildEnemy, type EncounterKind } from "@/lib/game/enemy";
+import {
+  createBossEnemy,
+  createWildEnemy,
+  type EncounterKind,
+} from "@/lib/game/enemy";
+import { getTeamAverageLevel, getTeamTopLevel } from "@/lib/game/team";
 import { applyChestBoost } from "@/lib/game/chest";
 import {
   isRetryNode,
@@ -43,12 +51,16 @@ import {
 } from "@/lib/game/map";
 import { getZone } from "@/lib/game/zones";
 import { pickOne } from "@/lib/game/rng";
+import type { StoryFollowUp } from "@/lib/story/apply";
+import { pickStoryEvent } from "@/lib/story/registry";
+import type { StoryEvent } from "@/lib/story/types";
 import {
   selectActiveMember,
   selectBattleModifiers,
   selectPokemonFor,
   selectReachableNodes,
   selectRunModifiers,
+  selectStoryContext,
   useGameStore,
 } from "@/lib/store/gameStore";
 import type { Pokemon, Rarity, StatKey, TeamMember } from "@/lib/types";
@@ -79,6 +91,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
   const winStreak = useGameStore((state) => state.winStreak);
   const pendingRelics = useGameStore((state) => state.pendingRelics);
   const log = useGameStore((state) => state.log);
+  const expShare = useGameStore((state) => state.expShare);
   const member = useGameStore(selectActiveMember);
   const pokemon = useGameStore((state) =>
     selectPokemonFor(state, selectActiveMember(state)),
@@ -95,6 +108,14 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
   const [isTeamOpen, setIsTeamOpen] = useState(false);
   const [isRestOpen, setIsRestOpen] = useState(false);
   const [activeEvent, setActiveEvent] = useState<MapEvent | null>(null);
+  /** Hikâye katmanından gelen olay — kendi karar ekranını açar. */
+  const [activeStoryEvent, setActiveStoryEvent] = useState<StoryEvent | null>(
+    null,
+  );
+  /** Kumarhane ekranı açık mı. Oturumun kendisi store'da duruyor. */
+  const [isCasinoOpen, setIsCasinoOpen] = useState(false);
+  /** "New run" onay penceresi — koşuyu kazayla silmeyi engelliyor. */
+  const [isNewRunConfirmOpen, setIsNewRunConfirmOpen] = useState(false);
 
   const busy =
     isLoadingBattle ||
@@ -104,6 +125,9 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     isTeamOpen ||
     isRestOpen ||
     activeEvent !== null ||
+    activeStoryEvent !== null ||
+    isCasinoOpen ||
+    isNewRunConfirmOpen ||
     (pendingRelics !== null && pendingRelics.length > 0);
 
   if (map === null) return null;
@@ -115,18 +139,35 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     const activePokemon = selectPokemonFor(store, activeMember);
     if (activeMember === null || activePokemon === null) return;
 
+    // Zorluğun ölçüsü sahadaki üye değil TAKIMIN ORTALAMASI — kimi sahaya
+    // sürdüğün taktik bir karar, zorluk ayarı değil (bkz. getTeamAverageLevel).
+    const partyLevel = getTeamAverageLevel(store.player.team);
+
     setIsLoadingBattle(true);
     try {
-      const enemy = await createWildEnemy(store.player.position, {
-        kind,
-        playerLevel: activeMember.level,
-        playerBst: activePokemon.baseStatTotal,
-        speciesId,
-      });
+      // Act sonu boss'u kadrolu: türü bölgeye, level'ı takıma göre belirlenir.
+      const enemy =
+        kind === "boss" && speciesId === undefined
+          ? await createBossEnemy(store.player.position, {
+              playerLevel: partyLevel,
+              playerBst: activePokemon.baseStatTotal,
+            })
+          : await createWildEnemy(store.player.position, {
+              kind,
+              playerLevel: partyLevel,
+              playerBst: activePokemon.baseStatTotal,
+              // Tip eşleşmesi adaleti: oyuncuya karşı duvar olan türler erken
+              // karelerde havuzdan çıkarılır (bkz. lib/game/enemy.ts).
+              playerTypes: activePokemon.types,
+              teamSize: store.player.team.length,
+              speciesId,
+            });
       const isElite = kind !== "wild";
 
       store.addLog(
-        `${isElite ? "A powerful" : "A wild"} ${enemy.pokemon.displayName} (Lv ${enemy.member.level}) appeared!`,
+        enemy.title !== null
+          ? `${enemy.pokemon.displayName}, ${enemy.title}, blocks the way! (Lv ${enemy.member.level})`
+          : `${isElite ? "A powerful" : "A wild"} ${enemy.pokemon.displayName} (Lv ${enemy.member.level}) appeared!`,
         isElite ? "bad" : "info",
       );
       store.beginBattle(
@@ -177,9 +218,36 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
       case "REST":
         setIsRestOpen(true);
         return;
-      case "EVENT":
-        setActiveEvent(pickOne(Math.random, MAP_EVENTS));
+      case "CASINO": {
+        // Act başına tek ziyaret; store karar veriyor. Kapalıysa düğüm boş
+        // geçiliyor ve oyuncuya sebebi günlükte yazıyor.
+        const store = useGameStore.getState();
+        if (store.openCasino(node.id)) {
+          setIsCasinoOpen(true);
+        } else {
+          store.addLog(
+            "The Game Corner has already had your custom this act.",
+            "info",
+          );
+        }
         return;
+      }
+      case "EVENT": {
+        // Önce hikâye katmanı: koşunun durumuna uyan bir olay varsa o çıkıyor.
+        // Yoksa eski olay havuzu aynen devam ediyor — mevcut olaylar bozulmadı.
+        const story = pickStoryEvent(
+          selectStoryContext(useGameStore.getState()),
+        );
+        if (story !== null) {
+          setActiveStoryEvent(story);
+          return;
+        }
+        // Görülmüş olaylar eleniyor: aynı sahne bir koşuda tekrar etmesin.
+        setActiveEvent(
+          pickUnseenEvent(useGameStore.getState().story.completedEvents),
+        );
+        return;
+      }
       default:
         return;
     }
@@ -325,6 +393,25 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
         ? activeEvent.art.speciesId
         : undefined;
 
+    // Eski olaylar da hikâye geçmişine yazılıyor — `pickUnseenEvent` bu listeyi
+    // okuyor, yani bir olay çözüldükten sonra havuzdan düşüyor.
+    if (activeEvent !== null) {
+      const chosen = activeEvent.options.findIndex(
+        (option) => option.outcome === outcome,
+      );
+      store.completeStoryEvent(
+        {
+          eventId: activeEvent.id,
+          choiceId: chosen >= 0 ? `option-${chosen}` : "option",
+          occurrence: 0,
+          checkTier: null,
+          act: store.act,
+          at: Date.now(),
+        },
+        true,
+      );
+    }
+
     if (outcome.gold !== undefined && outcome.gold !== 0) {
       store.addGold(outcome.gold);
     }
@@ -352,6 +439,15 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     setActiveEvent(null);
 
     if (outcome.fight === true) void startNodeBattle("elite", shownSpecies);
+  }
+
+  /** Hikâye olayı bitti: sonucu store'a zaten yazıldı, kalan ekran işleri burada. */
+  function handleStoryFinished(followUp: StoryFollowUp) {
+    setActiveStoryEvent(null);
+    if (followUp.chest !== undefined) setChestTier(followUp.chest);
+    if (followUp.fight !== undefined) {
+      void startNodeBattle("elite", followUp.fight.speciesId);
+    }
   }
 
   // --- Shop ---------------------------------------------------------------
@@ -435,7 +531,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
         position={player.position}
         onOpenTeam={() => !busy && setIsTeamOpen(true)}
         onOpenGuide={onOpenGuide}
-        onNewGame={() => useGameStore.getState().newGame()}
+        onNewGame={() => setIsNewRunConfirmOpen(true)}
       />
 
       <div className="grid gap-4 lg:grid-cols-[1fr_18rem]">
@@ -537,6 +633,17 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
         />
       )}
 
+      {isCasinoOpen && (
+        <CasinoScreen onLeave={() => setIsCasinoOpen(false)} />
+      )}
+
+      {activeStoryEvent !== null && (
+        <StoryEventRunner
+          event={activeStoryEvent}
+          onFinished={handleStoryFinished}
+        />
+      )}
+
       {activeEvent !== null && (
         <EventDialog
           event={activeEvent}
@@ -561,6 +668,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
           discount={selectRunModifiers({ relics }).shopDiscount}
           member={member}
           pokemon={pokemon}
+          playerLevel={getTeamTopLevel(player.team)}
           onBuyItem={handleBuyItem}
           onBuyChest={handleBuyChest}
           onLearnTm={handleLearnTm}
@@ -574,10 +682,29 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
           activeIndex={player.activeIndex}
           pokedex={pokedex}
           inventory={player.inventory}
+          expShare={expShare}
+          onToggleExpShare={(enabled) =>
+            useGameStore.getState().setExpShare(enabled)
+          }
           onSetActive={(index) => useGameStore.getState().setActiveIndex(index)}
           onUseItem={handleUseItem}
           onEvolveWithStone={handleStoneEvolution}
           onClose={() => setIsTeamOpen(false)}
+        />
+      )}
+
+      {isNewRunConfirmOpen && (
+        <ConfirmDialog
+          title="Start a new run?"
+          message="This run ends right here. Your team, relics, items and progress are all lost, and you start over from the starter wheel. This cannot be undone."
+          confirmLabel="Start a new run"
+          cancelLabel="Keep playing"
+          destructive
+          onConfirm={() => {
+            setIsNewRunConfirmOpen(false);
+            useGameStore.getState().newGame();
+          }}
+          onCancel={() => setIsNewRunConfirmOpen(false)}
         />
       )}
 

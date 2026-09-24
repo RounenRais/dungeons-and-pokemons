@@ -11,7 +11,14 @@
 import { createRandom, pickWeighted, type RandomFn } from "./rng";
 
 export type MapNodeType =
-  "BATTLE" | "ELITE" | "SHOP" | "CHEST" | "REST" | "EVENT" | "BOSS";
+  | "BATTLE"
+  | "ELITE"
+  | "SHOP"
+  | "CHEST"
+  | "REST"
+  | "EVENT"
+  | "CASINO"
+  | "BOSS";
 
 export interface MapNode {
   id: string;
@@ -55,6 +62,9 @@ const NODE_WEIGHTS: { value: MapNodeType; weight: number }[] = [
   { value: "ELITE", weight: 12 },
   { value: "REST", weight: 12 },
   { value: "SHOP", weight: 12 },
+  // Kumarhane nadir: act başına zaten tek ziyaret hakkı var, sık çıkması
+  // sadece boşa geçilen düğüm üretirdi.
+  { value: "CASINO", weight: 5 },
 ];
 
 function nodeId(act: number, row: number, col: number): string {
@@ -70,6 +80,8 @@ function nodeId(act: number, row: number, col: number): string {
 const NODE_QUOTA_SHARE: Partial<Record<MapNodeType, number>> = {
   SHOP: 0.07,
   REST: 0.08,
+  // Act başına en fazla bir kumarhane — ikincisi zaten kilitli açılırdı.
+  CASINO: 0.01,
   ELITE: 0.11,
   CHEST: 0.13,
 };
@@ -94,7 +106,7 @@ function buildQuotas(totalNodes: number): Partial<Record<MapNodeType, number>> {
  * kalmadığı için ikisi boşa gidiyor, hem de yol bir anda tehlikesizleşiyordu.
  * Dükkan için de aynısı geçerli — üst üste iki dükkanda harcayacak altının yok.
  */
-const NO_REPEAT: MapNodeType[] = ["REST", "SHOP"];
+const NO_REPEAT: MapNodeType[] = ["REST", "SHOP", "CASINO"];
 
 function rollNodeType(
   random: RandomFn,
@@ -121,6 +133,8 @@ function rollNodeType(
     // Elites are a mid/late threat; shops and rests need a little run-up too.
     if (type === "ELITE" && row < 4) type = "BATTLE";
     if ((type === "SHOP" || type === "REST") && row < 2) type = "EVENT";
+    // Kumarhaneye gitmeden önce harcayacak altın biriktirmiş olmalısın.
+    if (type === "CASINO" && row < 3) type = "EVENT";
 
     if (NO_REPEAT.includes(type)) {
       // Bir önceki duraktan buraya geliyorsan aynısını iki kere görme.
@@ -327,6 +341,7 @@ export const NODE_LABELS: Record<MapNodeType, string> = {
   CHEST: "Treasure",
   REST: "Rest Stop",
   EVENT: "Unknown",
+  CASINO: "Game Corner",
   BOSS: "Boss",
 };
 
@@ -337,6 +352,7 @@ export const NODE_COLORS: Record<MapNodeType, string> = {
   CHEST: "#fbbf24",
   REST: "#4ade80",
   EVENT: "#60a5fa",
+  CASINO: "#34d399",
   BOSS: "#f43f5e",
 };
 
@@ -347,5 +363,6 @@ export const NODE_DESCRIPTIONS: Record<MapNodeType, string> = {
   CHEST: "An unopened case. Something is inside.",
   REST: "Heal your team, or train for a permanent boost.",
   EVENT: "Anything could happen here.",
+  CASINO: "Three spins on the slots. The house has the edge.",
   BOSS: "The guardian of this route. Beat it to move on.",
 };

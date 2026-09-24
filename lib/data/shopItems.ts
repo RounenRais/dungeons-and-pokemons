@@ -3,8 +3,13 @@
 // Fiyatlar koşu ekonomisine göre seçildi: scripts/sim-run.mts ölçümünde
 // 100 karelik bir koşuda ~1200 altın toplanıyor, yani oyuncu birkaç iksir +
 // bir taş ya da bir TM alabilmeli; efsanevi kasa erişilebilir ama pahalı olmalı.
+//
+// Bütün katalog bir tur ucuzlatıldı (~%17): eski fiyatlarla oyuncu bir koşuda
+// pratikte tek bir anlamlı alışveriş yapabiliyordu ve dükkan "bakıp geçilen"
+// bir ekrana dönüşüyordu. Dükkanın işi altını emmek değil, altını KARARA
+// çevirmek — bunun için birden fazla şeyin ulaşılabilir olması gerekiyor.
 
-import { EVOLUTION_STONES } from "./items";
+import { EVOLUTION_STONES, LINK_STONE, LINK_STONE_MIN_LEVEL } from "./items";
 import { POKE_BALLS } from "./pokeballs";
 import type { ItemCategory, Rarity, StatKey } from "@/lib/types";
 
@@ -14,6 +19,7 @@ export type ItemEffect =
   | { kind: "revive"; percent: number }
   | { kind: "boost"; stat: StatKey; amount: number }
   | { kind: "stone"; stoneId: string }
+  | { kind: "link-stone" }
   | { kind: "ball"; ballId: string }
   | { kind: "chest"; tier: Rarity };
 
@@ -26,6 +32,11 @@ export interface ShopItem {
   effect: ItemEffect;
   /** Savaş sırasında hamle yerine kullanılabilir mi? */
   usableInBattle: boolean;
+  /**
+   * Bu eşyanın raflarda görünmesi için gereken en düşük takım level'ı.
+   * Verilmezse kısıt yok.
+   */
+  minLevel?: number;
 }
 
 const POTIONS: ShopItem[] = [
@@ -35,7 +46,7 @@ const POTIONS: ShopItem[] = [
     id: "oran-berry",
     label: "Oran Berry",
     category: "potion",
-    price: 70,
+    price: 60,
     description: "Restores 25 HP.",
     effect: { kind: "heal", amount: 25 },
     usableInBattle: true,
@@ -44,7 +55,7 @@ const POTIONS: ShopItem[] = [
     id: "sitrus-berry",
     label: "Sitrus Berry",
     category: "potion",
-    price: 190,
+    price: 160,
     description: "Restores 60 HP.",
     effect: { kind: "heal", amount: 60 },
     usableInBattle: true,
@@ -53,7 +64,7 @@ const POTIONS: ShopItem[] = [
     id: "potion",
     label: "Potion",
     category: "potion",
-    price: 120,
+    price: 100,
     description: "Restores 30 HP.",
     effect: { kind: "heal", amount: 30 },
     usableInBattle: true,
@@ -62,7 +73,7 @@ const POTIONS: ShopItem[] = [
     id: "super-potion",
     label: "Super Potion",
     category: "potion",
-    price: 280,
+    price: 230,
     description: "Restores 70 HP.",
     effect: { kind: "heal", amount: 70 },
     usableInBattle: true,
@@ -71,7 +82,7 @@ const POTIONS: ShopItem[] = [
     id: "hyper-potion",
     label: "Hyper Potion",
     category: "potion",
-    price: 600,
+    price: 500,
     description: "Restores 150 HP.",
     effect: { kind: "heal", amount: 150 },
     usableInBattle: true,
@@ -80,7 +91,7 @@ const POTIONS: ShopItem[] = [
     id: "max-potion",
     label: "Max Potion",
     category: "potion",
-    price: 1100,
+    price: 900,
     description: "Fully restores HP.",
     effect: { kind: "heal", amount: "full" },
     usableInBattle: true,
@@ -89,7 +100,7 @@ const POTIONS: ShopItem[] = [
     id: "full-heal",
     label: "Full Heal",
     category: "status-heal",
-    price: 250,
+    price: 200,
     description: "Cures paralysis, burn, poison, sleep and freeze.",
     effect: { kind: "cure" },
     usableInBattle: true,
@@ -98,7 +109,7 @@ const POTIONS: ShopItem[] = [
     id: "revive",
     label: "Revive",
     category: "potion",
-    price: 700,
+    price: 575,
     description: "Revives a fainted Pokémon with half its HP.",
     effect: { kind: "revive", percent: 50 },
     usableInBattle: false,
@@ -119,7 +130,7 @@ const STAT_BOOSTERS: ShopItem[] = (
   id,
   label,
   category: "stat-booster" as ItemCategory,
-  price: 750,
+  price: 625,
   description: `${statLabel} permanently +10.`,
   effect: { kind: "boost" as const, stat, amount: 10 },
   usableInBattle: false,
@@ -140,18 +151,40 @@ const STONES: ShopItem[] = EVOLUTION_STONES.map((stone) => ({
   id: stone.id,
   label: stone.label,
   category: "evolution-stone" as ItemCategory,
-  price: 1400,
+  price: 1150,
   description: stone.description,
   effect: { kind: "stone" as const, stoneId: stone.id },
   usableInBattle: false,
 }));
 
+/**
+ * Link Stone tek başına bir raf: level kilidi olan tek eşya.
+ *
+ * Neden 40. level? Kilitlediği evrimlerin hepsi (Machamp, Gengar, Alakazam,
+ * Magnezone, Gholdengo) tam evrimleşmiş, BST'si 500+ şeyler. Koşunun ilk
+ * yarısında satın alınabilir olsa, takıma erkenden bir üst-tier Pokémon
+ * sokmanın garantili yolu olurdu; 40. level bunu koşunun geç yarısına, yani
+ * kazanılmış bir ödül olduğu yere taşıyor.
+ */
+const LINK_STONES: ShopItem[] = [
+  {
+    id: LINK_STONE.id,
+    label: LINK_STONE.label,
+    category: "evolution-stone",
+    price: 1600,
+    description: LINK_STONE.description,
+    effect: { kind: "link-stone" },
+    usableInBattle: false,
+    minLevel: LINK_STONE_MIN_LEVEL,
+  },
+];
+
 /** Fiyat tier ile üstel artar. */
 const CHEST_PRICES: Record<Rarity, number> = {
-  common: 200,
-  rare: 600,
-  epic: 1600,
-  legendary: 4000,
+  common: 175,
+  rare: 500,
+  epic: 1300,
+  legendary: 3250,
 };
 
 const CHESTS: ShopItem[] = (
@@ -171,6 +204,7 @@ export const SHOP_CATALOG: ShopItem[] = [
   ...POTIONS,
   ...STAT_BOOSTERS,
   ...STONES,
+  ...LINK_STONES,
   ...CHESTS,
 ];
 
@@ -187,9 +221,9 @@ export function isUsableInBattle(itemId: string): boolean {
 
 /** TM fiyatı hareketin gücüne göre belirlenir. */
 export function getTmPrice(power: number | null, isStatus: boolean): number {
-  if (isStatus) return 400;
+  if (isStatus) return 325;
   const base = power ?? 60;
-  return Math.round(200 + base * 8);
+  return Math.round(175 + base * 6.5);
 }
 
 export const SHOP_CATEGORY_LABELS: Record<ItemCategory, string> = {

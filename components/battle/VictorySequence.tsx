@@ -9,7 +9,11 @@ import { AnimatePresence, motion } from "framer-motion";
 import { TYPE_COLORS } from "@/lib/data/typeChart";
 import { getXpToNextLevel } from "@/lib/game/leveling";
 import { STAT_REWARD_LABELS } from "@/lib/game/rewards";
-import { resolveVictory, type VictoryOutcome } from "@/lib/game/progression";
+import {
+  resolveVictory,
+  type PartyMemberInput,
+  type VictoryOutcome,
+} from "@/lib/game/progression";
 import { CatchPanel } from "./CatchPanel";
 import type { InventoryEntry } from "@/lib/types";
 import type { RunModifiers } from "@/lib/game/modifiers";
@@ -31,6 +35,8 @@ export interface VictoryResult {
   goldDelta: number;
   /** Evrim olduysa yeni tür — store'un pokédex'ine eklenmeli. */
   evolvedPokemon: Pokemon | null;
+  /** EXP Share ile pay alan yedekler — takım dizisine geri yazılacak. */
+  sharedMembers: { index: number; member: TeamMember; pokemon: Pokemon }[];
   /** Set when a ball actually held — the new team member. */
   capturedMember: TeamMember | null;
   capturedPokemon: Pokemon | null;
@@ -51,6 +57,10 @@ interface VictorySequenceProps {
   runModifiers: RunModifiers;
   /** Galibiyet serisi çarpanı. */
   streakMultiplier: number;
+  /** EXP Share açık mı? */
+  expShare: boolean;
+  /** Pay alacak yedek üyeler (EXP Share kapalıysa boş). */
+  party: PartyMemberInput[];
   /** Bag contents — Poké Balls are read from here. */
   inventory: InventoryEntry[];
   onConsumeBall: (ballId: string) => void;
@@ -101,6 +111,8 @@ export function VictorySequence(props: VictorySequenceProps) {
       teamSize: props.teamSize,
       runModifiers: props.runModifiers,
       streakMultiplier: props.streakMultiplier,
+      expShare: props.expShare,
+      party: props.party,
     })
       .then((result) => {
         setOutcome(result);
@@ -114,6 +126,26 @@ export function VictorySequence(props: VictorySequenceProps) {
           entries.push(
             `${result.evolution.from.displayName} evolved into ${result.evolution.to.displayName}!`,
           );
+        }
+
+        // EXP Share'in payları da günlüğe düşsün — arkada sessizce level
+        // atlayan bir Pokémon oyuncuya görünmez kalmasın.
+        for (const shared of result.sharedExperience) {
+          const name = getMemberName(shared.member, shared.pokemon);
+          entries.push(`${name} shared ${shared.xpGained} EXP.`);
+          if (shared.levelAfter > shared.levelBefore) {
+            entries.push(
+              `${name}: Lv ${shared.levelBefore} -> Lv ${shared.levelAfter}!`,
+            );
+          }
+          if (shared.evolution !== null) {
+            entries.push(
+              `${shared.evolution.from.displayName} evolved into ${shared.evolution.to.displayName}!`,
+            );
+          }
+          for (const move of shared.learnedMoves) {
+            entries.push(`${name} learned ${move.displayName}!`);
+          }
         }
 
         setLogs(entries);
@@ -134,6 +166,11 @@ export function VictorySequence(props: VictorySequenceProps) {
       member: finalMember,
       goldDelta: outcome?.goldDelta ?? 0,
       evolvedPokemon: outcome?.evolution?.to ?? null,
+      sharedMembers: (outcome?.sharedExperience ?? []).map((shared) => ({
+        index: shared.index,
+        member: shared.member,
+        pokemon: shared.pokemon,
+      })),
       capturedMember: caughtRef.current
         ? (outcome?.catchTarget?.member ?? null)
         : null,
@@ -285,6 +322,32 @@ function XpStep({
           />
         </div>
       </div>
+
+      {outcome.sharedExperience.length > 0 && (
+        <div className="mt-4 rounded-xl border border-[var(--ink-line)] bg-[var(--paper-2)] p-3 text-left">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--ink-faint)]">
+            EXP Share
+          </p>
+          <ul className="mt-1.5 space-y-0.5 text-xs">
+            {outcome.sharedExperience.map((shared) => (
+              <li
+                key={shared.member.instanceId}
+                className="flex items-center justify-between gap-3"
+              >
+                <span className="truncate">
+                  {getMemberName(shared.member, shared.pokemon)}
+                </span>
+                <span className="shrink-0 font-mono text-emerald-700">
+                  +{shared.xpGained} XP
+                  {shared.levelAfter > shared.levelBefore
+                    ? ` · Lv ${shared.levelAfter}`
+                    : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {leveledUp && (
         <div className="mt-4 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3">

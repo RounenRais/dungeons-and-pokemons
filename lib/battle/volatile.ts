@@ -5,6 +5,14 @@
 // Leech Seed, Protect, Substitute, kilitlenen hamleler hep burada tutuluyor.
 
 export interface VolatileState {
+  /**
+   * Bu Pokémon sahaya çıktıktan sonra kaç tur geçti (turun başında artar).
+   *
+   * 1 = sahadaki ilk turu. Fake Out / First Impression gibi "sadece ilk tur"
+   * hareketleri buna bakıyor; değişimde sıfırlanıyor çünkü `createCombatant`
+   * her sahaya çıkışta yeni bir volatile üretiyor.
+   */
+  turnsActive: number;
   /** Bu tur Protect/Detect başarılı oldu mu? */
   protected: boolean;
   /** Üst üste kaçıncı korunma — her tekrarda başarı şansı üçte bire düşer. */
@@ -73,6 +81,7 @@ export interface VolatileState {
 
 export function createVolatileState(): VolatileState {
   return {
+    turnsActive: 0,
     protected: false,
     protectStreak: 0,
     enduring: false,

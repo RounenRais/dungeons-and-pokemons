@@ -1,7 +1,37 @@
-// Pacing tool (not a test): simulates a whole run to answer "how deep before
-// the first evolution" and "what level are we at depth N".
+// Tempo aracı (test değil): bütün bir koşuyu simüle edip "ilk evrim kaçıncı
+// karede oluyor" ve "N. karede hangi level'dayız" sorularını yanıtlar.
 //
-// Usage: npx tsx scripts/sim-run.mts [xpDivisor] [runs] [winHeal%] [softDefeat] [restorePP] [cureStatus]
+// ---------------------------------------------------------------------------
+// BÜTÜN SAYILAR OYUNUN KENDİSİNDEN
+// ---------------------------------------------------------------------------
+// Bu dosyanın tek işi OYUNU modellemek. Daha önce öyle değildi: XP bölenini,
+// zafer iyileşmesini, PP dolumunu ve yenilgi davranışını komut satırı
+// bayraklarından okuyordu ve bayrakların varsayılanları oyunun gerçek
+// kurallarıyla alakasızdı — XP'nin 1/7'si veriliyordu, zaferden sonra hiç can
+// gelmiyordu, ilk yenilgi koşuyu bitiriyordu. Sonuç olarak araç her koşuda
+// "2. karede öldü, level 5" diyordu; ölçtüğü şey oyun değil, yıllar önce
+// denenmiş bir ayar setiydi.
+//
+// Artık modellenen şeyler doğrudan oyunun fonksiyonlarından geliyor:
+//
+//   XP                 calculateXpGain (XP_RATE + BOSS_XP_MULTIPLIER dâhil)
+//   zafer iyileşmesi   VICTORY_HEAL_PERCENT
+//   PP / durum         resolveVictory'nin yaptığı gibi tam dolum + temizlik
+//   ödül               rollReward (altın %40, hareket %30, boost %30)
+//   evrim              evolveToLevel (max HP ve büyüme eğrisi dâhil)
+//   yenilgi            STARTING_REVIVES + applyDefeat kuralı
+//   düşman             createWildEnemy / createBossEnemy (kadrolu boss'lar)
+//   zorluk ölçüsü      getTeamAverageLevel
+//   iksir              dükkandan alınıyor, savaşta hamle yerine kullanılıyor
+//
+// Modellenen oyuncu: TEK Pokémon, relik yok, yakalama yok. Yani ölçtüğü şey
+// kasten en kötü durum — gerçek bir koşuda oyuncunun altı üyesi, relikleri ve
+// TM'leri var. İksir ise modellenmek zorunda: hiç iyileşmeyen bir oyuncu
+// oyuncu değil, ve onsuz araç "kimse birinci act'i geçemiyor" diyor.
+//
+// Komut satırı yalnızca DENEY için: varsayılanlar oyunun kendisi.
+//
+// Kullanım: npx tsx scripts/sim-run.mts [runs] [maxTiles] [xpMultiplier]
 
 import {
   chooseEnemyMove,
@@ -11,17 +41,31 @@ import {
   startBattle,
 } from '../lib/battle';
 import { STARTERS, STARTER_LEVEL } from '../lib/data/starters';
-import { generateMap, getDepth, getReachableNodes, MAP_ROWS } from '../lib/game/map';
-import { getChestGold } from '../lib/game/chest';
-import { createWildEnemy } from '../lib/game/enemy';
-import { applyExperience, getMovesLearnedAtLevels } from '../lib/game/leveling';
-import { teachMove } from '../lib/game/progression';
-import { calculateGoldReward } from '../lib/game/rewards';
-import { createRandom, pickOne } from '../lib/game/rng';
-import { createTeamMember, healTeamMembers } from '../lib/game/team';
 import {
-  findAutomaticEvolution,
-  getEvolutionChain,
+  generateMap,
+  getDepth,
+  getReachableNodes,
+  MAP_ROWS,
+} from '../lib/game/map';
+import { getChestGold } from '../lib/game/chest';
+import { createBossEnemy, createWildEnemy } from '../lib/game/enemy';
+import { calculateXpGain, applyExperience, getMovesLearnedAtLevels } from '../lib/game/leveling';
+import {
+  applyBoostReward,
+  evolveToLevel,
+  teachMove,
+  VICTORY_HEAL_PERCENT,
+} from '../lib/game/progression';
+import { rollReward } from '../lib/game/rewards';
+import { getShopItem } from '../lib/data/shopItems';
+import { createRandom, pickOne } from '../lib/game/rng';
+import {
+  createTeamMember,
+  getTeamAverageLevel,
+  healTeamMembers,
+} from '../lib/game/team';
+import { STARTING_REVIVES } from '../lib/store/gameStore';
+import {
   getMoves,
   getPokemon,
   getSpecies,
@@ -30,24 +74,71 @@ import {
 import type { Combatant } from '../lib/battle';
 import type { Move, Pokemon, TeamMember } from '../lib/types';
 
-const XP_DIVISOR = Number(process.argv[2] ?? 7);
-const RUNS = Number(process.argv[3] ?? 4);
-/** Zaferden sonra geri gelen max HP yüzdesi (0 = yok). */
-const WIN_HEAL_PERCENT = Number(process.argv[4] ?? 0);
-/** 1 ise yenilgi koşuyu bitirmez: yarı altın + %50 HP + 3 kare geri. */
-const SOFT_DEFEAT = process.argv[5] === '1';
-/** 1 ise zaferden sonra PP tamamen dolar. */
-const RESTORE_PP = process.argv[6] === '1';
-/** 1 ise zaferden sonra durum efektleri temizlenir. */
-const CURE_STATUS = process.argv[7] === '1';
-const MAX_TILES = 120;
+const RUNS = Number(process.argv[2] ?? 4);
+const MAX_TILES = Number(process.argv[3] ?? 120);
+/**
+ * XP çarpanı — SADECE deney için. 1 = oyunun kendi temposu.
+ *
+ * Eskiden burada bir "bölen" vardı ve varsayılanı 7'ydi; oyunun XP_RATE'i 1
+ * olduğu için araç gerçek temponun yedide birini ölçüyordu.
+ */
+const XP_MULTIPLIER = Number(process.argv[4] ?? 1);
 
+/**
+ * Simüle edilen oyuncunun iksir politikası.
+ *
+ * Adaylar katalogdan okunuyor, fiyat ve iyileştirme elle yazılmıyor: dükkan
+ * dengesi değişirse ölçüm de kendiliğinden değişiyor.
+ *
+ * Tek bir iksire kilitlemek işe yaramadı: Super Potion 230 coin ve oyuncu ilk
+ * act'te o kadar altını hiç görmüyor, dolayısıyla hiç iksir almıyordu ve
+ * "hiç iyileşmeyen oyuncu" ölçümüne geri dönüyorduk. Artık PARASININ YETTİĞİ
+ * en iyisini alıyor — gerçek bir oyuncunun yaptığı şey.
+ */
+const POTION_CANDIDATES = ['hyper-potion', 'super-potion', 'potion', 'oran-berry'];
+/** Canın bu oranın altına düşmesi hamle yerine iksir içirmeye yeter. */
+const POTION_THRESHOLD = 0.45;
+/** Çantada en fazla kaç iksir taşınıyor. */
+const MAX_POTIONS = 4;
+/** Altının ne kadarı iksire ayrılıyor — gerisi ball/Revive için duruyor. */
+const POTION_BUDGET_SHARE = 0.7;
+
+interface PotionKind {
+  itemId: string;
+  label: string;
+  price: number;
+  heal: number | 'full';
+}
+
+/** Kataloğu okuyup adayları pahalıdan ucuza sıralar. */
+function loadPotions(): PotionKind[] {
+  const kinds: PotionKind[] = [];
+  for (const itemId of POTION_CANDIDATES) {
+    const item = getShopItem(itemId);
+    if (item === null || item.effect.kind !== 'heal') continue;
+    kinds.push({
+      itemId,
+      label: item.label,
+      price: item.price,
+      heal: item.effect.amount,
+    });
+  }
+  if (kinds.length === 0) {
+    throw new Error('no healing items left in the catalogue');
+  }
+  return kinds.sort((a, b) => b.price - a.price);
+}
+
+const POTIONS = loadPotions();
+
+/** İnsan oyuncunun makul tercihi: en çok hasar veren hamle. */
 function pickPlayerMove(player: Combatant, enemy: Combatant): Move {
   const moves = getUsableMoves(player);
   let best = moves[0];
   let bestDamage = -1;
   for (const move of moves) {
-    const damage = move.category === 'status' ? 0 : estimateDamage(player, enemy, move);
+    const damage =
+      move.category === 'status' ? 0 : estimateDamage(player, enemy, move);
     if (damage > bestDamage) {
       bestDamage = damage;
       best = move;
@@ -56,27 +147,60 @@ function pickPlayerMove(player: Combatant, enemy: Combatant): Move {
   return best;
 }
 
-/** Level atlayınca tetiklenen otomatik evrimleri uygular. */
-async function evolveIfPossible(
+/**
+ * Savaş sonrası toparlanma — `resolveVictory` ne yapıyorsa o.
+ *
+ * PP dolumu ve durum temizliği artık bayrağa bağlı değil, çünkü oyunda da
+ * bağlı değil: her zafer bunları yapıyor.
+ */
+function recoverAfterWin(member: TeamMember): TeamMember {
+  return {
+    ...member,
+    status: 'none',
+    statusTurns: 0,
+    pp: Object.fromEntries(member.moves.map((move) => [move.id, move.pp])),
+    currentHp: Math.min(
+      member.maxHp,
+      member.currentHp + Math.ceil((member.maxHp * VICTORY_HEAL_PERCENT) / 100),
+    ),
+  };
+}
+
+/** Level atlayınca açılan hareketleri öğrenir: set doluysa en zayıfın yerine. */
+async function learnNewMoves(
   member: TeamMember,
   pokemon: Pokemon,
-): Promise<{ member: TeamMember; pokemon: Pokemon; evolved: boolean }> {
-  let currentMember = member;
-  let currentPokemon = pokemon;
-  let evolved = false;
+  levelsGained: readonly number[],
+): Promise<TeamMember> {
+  const newMoveIds = getMovesLearnedAtLevels(
+    pokemon,
+    levelsGained,
+    member.moves.map((move) => move.id),
+  );
+  if (newMoveIds.length === 0) return member;
 
-  for (let step = 0; step < 5; step += 1) {
-    const species = await getSpecies(currentPokemon.speciesId);
-    if (species.evolutionChainId === null) break;
-    const chain = await getEvolutionChain(species.evolutionChainId);
-    const next = findAutomaticEvolution(chain, currentPokemon.speciesId, currentMember.level);
-    if (next === null) break;
+  const powerOf = (move: Move) =>
+    move.category === 'status' ? 0 : (move.power ?? 0);
+  let current = member;
 
-    currentPokemon = await getPokemon(next.toSpeciesName);
-    currentMember = { ...currentMember, pokemonId: currentPokemon.id, speciesId: currentPokemon.speciesId };
-    evolved = true;
+  for (const candidate of await getMoves(newMoveIds)) {
+    if (current.moves.length < 4) {
+      current = teachMove(current, candidate, null);
+      continue;
+    }
+    let worstIndex = 0;
+    let worstPower = Infinity;
+    current.moves.forEach((move, index) => {
+      if (powerOf(move) < worstPower) {
+        worstPower = powerOf(move);
+        worstIndex = index;
+      }
+    });
+    if (powerOf(candidate) > worstPower) {
+      current = teachMove(current, candidate, worstIndex);
+    }
   }
-  return { member: currentMember, pokemon: currentPokemon, evolved };
+  return current;
 }
 
 interface RunReport {
@@ -85,13 +209,20 @@ interface RunReport {
   secondEvolutionTile: number | null;
   diedAtTile: number | null;
   defeats: number;
+  revivesUsed: number;
   bossDefeats: number;
   bossBattles: number;
+  eliteDefeats: number;
+  eliteBattles: number;
+  actsCleared: number;
   levelByTile: Map<number, number>;
   goldEarned: number;
+  potionsBought: number;
+  potionsUsed: number;
   battles: number;
   finalLevel: number;
   finalSpecies: string;
+  deepestTile: number;
 }
 
 async function simulateRun(seed: number): Promise<RunReport> {
@@ -113,60 +244,132 @@ async function simulateRun(seed: number): Promise<RunReport> {
     secondEvolutionTile: null,
     diedAtTile: null,
     defeats: 0,
+    revivesUsed: 0,
     bossDefeats: 0,
     bossBattles: 0,
+    eliteDefeats: 0,
+    eliteBattles: 0,
+    actsCleared: 0,
     levelByTile: new Map(),
     goldEarned: 0,
+    potionsBought: 0,
+    potionsUsed: 0,
     battles: 0,
     finalLevel: member.level,
     finalSpecies: pokemon.displayName,
+    deepestTile: 0,
   };
 
+  /** Çantadaki iksirler; en güçlüsü önce içiliyor. */
+  let bag: PotionKind[] = [];
   let evolutions = 0;
+  let revives = STARTING_REVIVES;
+  /**
+   * Cepteki altın. `goldEarned` kümülatif kazanç (raporlama için); harcama bu
+   * bakiyeden düşüyor. Eskiden tek bir sayı vardı ve hiç harcanmıyordu.
+   */
+  let gold = 0;
   let act = 0;
-  let map = generateMap(seed, act);
+  // Her act kendi haritasını alıyor — oyunda da `advanceAct` yeni bir tohumla
+  // yeni bir harita üretiyor, aynı tohumu tekrar kullanmıyor.
+  let map = generateMap(seed + act * 7919, act);
   let currentNodeId: string | null = null;
+  /** Bu act'te uğranılan son dinlenme durağı — yenilgi kontrol noktası. */
+  let lastRestNodeId: string | null = null;
   let position = 0;
 
+  /**
+   * Act'i ilerletir — oyunda boss yenilince `advanceAct` bunu yapıyor.
+   *
+   * Burası bir hata kaynağıydı: sim "gidilecek düğüm kalmadıysa act bitti"
+   * varsayıyordu, ama boss düğümü çıkışsız DEĞİL — `getReachableNodes` orada
+   * tek seçenek olarak boss'un kendisini döndürüyor (yenilince tekrar
+   * denemek için). Sonuç olarak sim boss'u kazandığında bile aynı boss'a
+   * geri dönüyordu ve hiçbir koşu ikinci act'i görmüyordu.
+   */
+  const advanceAct = () => {
+    act += 1;
+    report.actsCleared += 1;
+    map = generateMap(seed + act * 7919, act);
+    currentNodeId = null;
+    lastRestNodeId = null;
+  };
+
   while (position < MAX_TILES) {
-    // Walk the route the way a player would: pick a random open branch.
     const options = getReachableNodes(map, currentNodeId);
     if (options.length === 0) {
-      act += 1;
-      map = generateMap(seed, act);
-      currentNodeId = null;
+      // Güvenlik ağı: normalde buraya düşülmüyor (boss düğümü bile bir
+      // seçenek döndürüyor), ama harita bozuksa sonsuz döngü olmasın.
+      advanceAct();
       continue;
     }
+
     currentNodeId = pickOne(random, options);
     const node = map.nodes[currentNodeId];
     position = getDepth(act, node.row);
+    report.deepestTile = Math.max(report.deepestTile, position);
     report.levelByTile.set(position, member.level);
-
-    if (node.row === MAP_ROWS - 1) {
-      // Boss cleared below; the next loop starts a new act.
-    }
 
     if (node.type === 'REST') {
       member = healTeamMembers([member])[0];
+      lastRestNodeId = node.id;
       continue;
     }
     if (node.type === 'EVENT') {
+      // Olayların ortalama altın getirisi; hangi kararın verildiği burada
+      // modellenmiyor (o hikâye katmanının işi, temponun değil).
       report.goldEarned += 60;
+      gold += 60;
       continue;
     }
-    if (node.type === 'SHOP') continue;
+    if (node.type === 'SHOP') {
+      // Oyuncu dükkandan iksir alıyor: bütçesi dâhilinde alabildiği en iyisini,
+      // çanta dolana kadar. Altının tamamını harcamıyor — ball ve Revive için
+      // de parası olması lazım.
+      let budget = Math.floor(gold * POTION_BUDGET_SHARE);
+      while (bag.length < MAX_POTIONS) {
+        const affordable = POTIONS.find((kind) => kind.price <= budget);
+        if (affordable === undefined) break;
+        bag.push(affordable);
+        budget -= affordable.price;
+        gold -= affordable.price;
+        report.potionsBought += 1;
+      }
+      // En güçlüsü önce içilsin.
+      bag = bag.sort((a, b) => b.price - a.price);
+      continue;
+    }
+    // Kumarhane act başına tek ziyaret ve beklenen getirisi negatif; tempo
+    // ölçümünde oyuncunun oraya girmediğini varsayıyoruz.
+    if (node.type === 'CASINO') continue;
     if (node.type === 'CHEST') {
-      report.goldEarned += getChestGold('rare', position, random);
+      const found = getChestGold('rare', position, random);
+      report.goldEarned += found;
+      gold += found;
       continue;
     }
 
-    const kind = node.type === 'BOSS' ? 'boss' : node.type === 'ELITE' ? 'elite' : 'wild';
+    const kind =
+      node.type === 'BOSS' ? 'boss' : node.type === 'ELITE' ? 'elite' : 'wild';
     const isBoss = kind !== 'wild';
-    const enemy = await createWildEnemy(position, {
-      playerLevel: member.level,
-      playerBst: pokemon.baseStatTotal,
-      kind,
-    });
+
+    // Zorluğun ölçüsü takımın ortalaması; tek üyeli bir takımda bu onun
+    // level'ı, ama ölçüm oyunun kullandığı fonksiyondan geçiyor.
+    const partyLevel = getTeamAverageLevel([member]);
+
+    const enemy =
+      kind === 'boss'
+        ? await createBossEnemy(position, {
+            playerLevel: partyLevel,
+            playerBst: pokemon.baseStatTotal,
+          })
+        : await createWildEnemy(position, {
+            playerLevel: partyLevel,
+            playerBst: pokemon.baseStatTotal,
+            kind,
+            playerTypes: pokemon.types,
+            teamSize: 1,
+          });
 
     let state = startBattle({
       playerPokemon: pokemon,
@@ -178,16 +381,38 @@ async function simulateRun(seed: number): Promise<RunReport> {
     });
     let turns = 0;
     while (state.outcome === 'ongoing' && turns < 200) {
+      // Can eşiğin altındaysa ve çantada iksir varsa hamle yerine iksir —
+      // oyunun kendi "çanta" mekaniği, bir tur harcıyor.
+      const hurt =
+        state.player.currentHp / Math.max(1, state.player.maxHp) <
+        POTION_THRESHOLD;
+      const drink = hurt ? bag.shift() : undefined;
+      if (drink !== undefined) report.potionsUsed += 1;
+
       state = executeTurn(
         state,
-        { kind: 'move', move: pickPlayerMove(state.player, state.enemy) },
+        drink !== undefined
+          ? {
+              kind: 'item',
+              item: {
+                itemId: drink.itemId,
+                label: drink.label,
+                heal: drink.heal,
+              },
+            }
+          : { kind: 'move', move: pickPlayerMove(state.player, state.enemy) },
         chooseEnemyMove(state, random),
         random,
       ).state;
       turns += 1;
     }
     report.battles += 1;
-    if (isBoss) report.bossBattles += 1;
+    // `isBoss` motorun bayrağı ve "elite ya da boss" demek; rapor ikisini
+    // AYIRIYOR, çünkü elite kazanılabilir bir dövüş, boss act'in duvarı.
+    // Birlikte sayıldığında "boss %21" gibi bir satır çıkıyordu ve o oran
+    // aslında kazanılan elite dövüşlerinden geliyordu.
+    if (node.type === 'BOSS') report.bossBattles += 1;
+    if (node.type === 'ELITE') report.eliteBattles += 1;
 
     member = {
       ...member,
@@ -198,85 +423,77 @@ async function simulateRun(seed: number): Promise<RunReport> {
 
     if (state.outcome !== 'win') {
       report.defeats += 1;
-      if (isBoss) report.bossDefeats += 1;
-      if (!SOFT_DEFEAT) {
+      if (node.type === 'BOSS') report.bossDefeats += 1;
+      if (node.type === 'ELITE') report.eliteDefeats += 1;
+
+      // Oyunun yenilgi kuralı: Revive varsa harcanır ve oyuncu bu act'teki son
+      // dinlenme durağına (yoksa act'in başına) yarım can ve yarım altınla
+      // döner. Revive yoksa koşu biter.
+      if (revives <= 0) {
         report.diedAtTile = position;
         break;
       }
-      // Soft defeat: half the coins go, the team gets up at half HP.
-      report.goldEarned = report.goldEarned / 2;
-      member = { ...member, currentHp: Math.ceil(member.maxHp / 2), status: 'none', statusTurns: 0 };
+      revives -= 1;
+      report.revivesUsed += 1;
+      // Yenilgi bedeli: cepteki altının yarısı gidiyor (oyunda da öyle).
+      gold = Math.floor(gold / 2);
+      member = {
+        ...member,
+        currentHp: Math.max(1, Math.ceil(member.maxHp / 2)),
+        status: 'none',
+        statusTurns: 0,
+        pp: Object.fromEntries(member.moves.map((move) => [move.id, move.pp])),
+      };
+      currentNodeId = lastRestNodeId;
+      position = getDepth(act, lastRestNodeId === null ? 0 : map.nodes[lastRestNodeId].row);
       continue;
     }
 
-    report.goldEarned += calculateGoldReward(position, isBoss, random) * 0.4;
+    member = recoverAfterWin(member);
 
-    if (CURE_STATUS) {
-      member = { ...member, status: 'none', statusTurns: 0 };
+    // Boss yenildi: sonraki act yeni bir haritayla açılıyor.
+    if (node.type === 'BOSS') advanceAct();
+
+    // Savaş sonu ödülü gerçekten atılıyor: altın her zaman gelmiyor (%40) ve
+    // gelen stat boost'u oyuncunun hayatta kalmasını gerçekten etkiliyor.
+    const reward = rollReward(random, {
+      tileIndex: position,
+      isBoss,
+      pokemon,
+      knownMoveIds: member.moves.map((move) => move.id),
+    });
+    if (reward.kind === 'gold') {
+      report.goldEarned += reward.amount;
+      gold += reward.amount;
     }
-
-    if (RESTORE_PP) {
-      member = {
-        ...member,
-        pp: Object.fromEntries(member.moves.map((m) => [m.id, m.pp])),
-      };
-    }
-
-    if (WIN_HEAL_PERCENT > 0) {
-      member = {
-        ...member,
-        currentHp: Math.min(
-          member.maxHp,
-          member.currentHp + Math.ceil((member.maxHp * WIN_HEAL_PERCENT) / 100),
-        ),
-      };
+    if (reward.kind === 'boost') {
+      member = applyBoostReward(member, pokemon, reward);
     }
 
     const xp = Math.max(
       1,
-      Math.floor((enemy.pokemon.baseExperience * enemy.member.level) / XP_DIVISOR) *
-        (isBoss ? 1.5 : 1),
+      Math.round(
+        calculateXpGain(enemy.pokemon.baseExperience, enemy.member.level, isBoss) *
+          XP_MULTIPLIER,
+      ),
     );
-    const result = applyExperience(member, pokemon, Math.floor(xp));
+    const result = applyExperience(member, pokemon, xp);
     member = result.member;
 
     if (result.levelsGained.length > 0) {
-      const evolution = await evolveIfPossible(member, pokemon);
-      if (evolution.evolved) {
-        member = evolution.member;
-        pokemon = evolution.pokemon;
+      // Evrim oyunun kendi fonksiyonundan geçiyor: max HP ve büyüme eğrisi de
+      // güncelleniyor. Eskiden burada sadece tür kimliği değişiyordu, yani
+      // evrimleşen Pokémon eski max HP'siyle dolaşıyordu.
+      const evolved = await evolveToLevel(member, pokemon);
+      if (evolved.pokemon.id !== pokemon.id) {
+        member = evolved.member;
+        pokemon = evolved.pokemon;
         evolutions += 1;
         if (evolutions === 1) report.firstEvolutionTile = position;
         if (evolutions === 2) report.secondEvolutionTile = position;
       }
 
-      // Level atlayınca açılan hareketleri öğren — makul bir oyuncu gibi:
-      // set doluysa en zayıf hamlenin yerine, sadece daha güçlüyse geçir.
-      const newMoveIds = getMovesLearnedAtLevels(
-        pokemon,
-        result.levelsGained,
-        member.moves.map((m) => m.id),
-      );
-      if (newMoveIds.length > 0) {
-        const powerOf = (m: Move) => (m.category === 'status' ? 0 : (m.power ?? 0));
-        for (const candidate of await getMoves(newMoveIds)) {
-          if (member.moves.length < 4) {
-            member = teachMove(member, candidate, null);
-            continue;
-          }
-          let worstIndex = 0;
-          let worstPower = Infinity;
-          member.moves.forEach((m, i) => {
-            if (powerOf(m) < worstPower) {
-              worstPower = powerOf(m);
-              worstIndex = i;
-            }
-          });
-          if (powerOf(candidate) > worstPower) {
-            member = teachMove(member, candidate, worstIndex);
-          }
-        }
-      }
+      member = await learnNewMoves(member, pokemon, result.levelsGained);
     }
   }
 
@@ -285,7 +502,8 @@ async function simulateRun(seed: number): Promise<RunReport> {
   return report;
 }
 
-console.log(`XP bölen = ${XP_DIVISOR}, ${RUNS} koşu, en fazla ${MAX_TILES} kare\n`);
+const xpNote = XP_MULTIPLIER === 1 ? 'oyunun kendi temposu' : `XP x${XP_MULTIPLIER}`;
+console.log(`${RUNS} koşu, en fazla ${MAX_TILES} kare, ${xpNote}\n`);
 
 const reports: RunReport[] = [];
 for (let seed = 1; seed <= RUNS; seed += 1) {
@@ -295,29 +513,102 @@ for (let seed = 1; seed <= RUNS; seed += 1) {
     `${report.starter.padEnd(12)} → 1. evrim: ${String(report.firstEvolutionTile ?? '-').padStart(3)}. kare` +
       ` | 2. evrim: ${String(report.secondEvolutionTile ?? '-').padStart(3)}. kare` +
       ` | son: Lv${report.finalLevel} ${report.finalSpecies}` +
-      ` | ${report.battles} savaş, ${report.defeats} yenilgi | ${Math.round(report.goldEarned)} altın` +
-      (report.diedAtTile !== null ? ` | ✝ ${report.diedAtTile}. karede öldü` : ''),
+      ` | ${report.battles} savaş, ${report.defeats} yenilgi` +
+      ` | ${report.actsCleared} act | ${Math.round(report.goldEarned)} altın` +
+      (report.diedAtTile !== null
+        ? ` | ✝ ${report.diedAtTile}. karede öldü`
+        : ` | ${report.deepestTile}. kareye ulaştı`),
   );
 }
 
-const firstEvos = reports.map((r) => r.firstEvolutionTile).filter((t): t is number => t !== null);
-const avg = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : NaN);
-console.log(`\nOrtalama 1. evrim karesi: ${avg(firstEvos).toFixed(1)} (${firstEvos.length}/${RUNS} koşuda gerçekleşti)`);
+const avg = (xs: number[]) =>
+  xs.length ? xs.reduce((sum, x) => sum + x, 0) / xs.length : NaN;
 
-for (const milestone of [10, 20, 30, 50]) {
+const firstEvos = reports
+  .map((report) => report.firstEvolutionTile)
+  .filter((tile): tile is number => tile !== null);
+const secondEvos = reports
+  .map((report) => report.secondEvolutionTile)
+  .filter((tile): tile is number => tile !== null);
+
+console.log(
+  `\nOrtalama 1. evrim karesi: ${firstEvos.length ? avg(firstEvos).toFixed(1) : '—'}` +
+    ` (${firstEvos.length}/${RUNS} koşuda gerçekleşti)`,
+);
+console.log(
+  `Ortalama 2. evrim karesi: ${secondEvos.length ? avg(secondEvos).toFixed(1) : '—'}` +
+    ` (${secondEvos.length}/${RUNS} koşuda gerçekleşti)`,
+);
+
+/*
+ * Kilometre taşları.
+ *
+ * Burada bir raporlama hatası vardı: "en son kaydedilen level"i alıyordu, yani
+ * 12. karede ölen bir koşu için de "80. karede level 17" yazıyordu. Ölçüm
+ * aracının uydurduğu sayı, ölçmediği sayıdan daha kötü. Artık sadece o kareye
+ * GERÇEKTEN ulaşan koşular sayılıyor ve kaçının ulaştığı da yazıyor.
+ */
+for (const milestone of [10, 20, 30, 50, 80]) {
   const levels = reports
-    .map((r) => [...r.levelByTile.entries()].filter(([tile]) => tile <= milestone).pop()?.[1])
-    .filter((l): l is number => l !== undefined);
-  if (levels.length > 0) {
-    console.log(`  ${milestone}. karede ortalama level: ${avg(levels).toFixed(1)}`);
-  }
+    .filter((report) => report.deepestTile >= milestone)
+    .map(
+      (report) =>
+        [...report.levelByTile.entries()]
+          .filter(([tile]) => tile <= milestone)
+          .pop()?.[1],
+    )
+    .filter((level): level is number => level !== undefined);
+
+  console.log(
+    levels.length > 0
+      ? `  ${String(milestone).padStart(3)}. karede ortalama level: ${avg(levels).toFixed(1)}` +
+          ` (${levels.length}/${RUNS} koşu buraya ulaştı)`
+      : `  ${String(milestone).padStart(3)}. kareye hiçbir koşu ulaşmadı`,
+  );
 }
-console.log(`  ortalama altın: ${avg(reports.map((r) => r.goldEarned)).toFixed(0)}`);
-const totalBattles = reports.reduce((s, r) => s + r.battles, 0);
-const totalDefeats = reports.reduce((s, r) => s + r.defeats, 0);
-const totalBoss = reports.reduce((s, r) => s + r.bossBattles, 0);
-const totalBossDefeats = reports.reduce((s, r) => s + r.bossDefeats, 0);
-console.log(`  kazanma oranı: normal %${(((totalBattles - totalBoss - (totalDefeats - totalBossDefeats)) / Math.max(1, totalBattles - totalBoss)) * 100).toFixed(0)}, boss %${(((totalBoss - totalBossDefeats) / Math.max(1, totalBoss)) * 100).toFixed(0)}`);
-const survived = reports.filter((r) => r.diedAtTile === null).length;
-const deathTiles = reports.map((r) => r.diedAtTile).filter((t): t is number => t !== null);
-console.log(`  ${survived}/${RUNS} koşu ${MAX_TILES} kareyi tamamladı` + (deathTiles.length ? `, ölenlerin ortalama karesi ${avg(deathTiles).toFixed(0)}` : ''));
+
+console.log(`  ortalama altın kazancı: ${avg(reports.map((r) => r.goldEarned)).toFixed(0)}`);
+console.log(
+  `  iksir: ${reports.reduce((total, r) => total + r.potionsBought, 0)} alındı,` +
+    ` ${reports.reduce((total, r) => total + r.potionsUsed, 0)} içildi`,
+);
+console.log(
+  `  ortalama ulaşılan derinlik: ${avg(reports.map((r) => r.deepestTile)).toFixed(1)}. kare` +
+    ` | ortalama geçilen act: ${avg(reports.map((r) => r.actsCleared)).toFixed(1)}`,
+);
+
+const sum = (pick: (report: RunReport) => number) =>
+  reports.reduce((total, report) => total + pick(report), 0);
+
+const totalBattles = sum((r) => r.battles);
+const totalDefeats = sum((r) => r.defeats);
+const bossBattles = sum((r) => r.bossBattles);
+const bossDefeats = sum((r) => r.bossDefeats);
+const eliteBattles = sum((r) => r.eliteBattles);
+const eliteDefeats = sum((r) => r.eliteDefeats);
+const wildBattles = totalBattles - bossBattles - eliteBattles;
+const wildDefeats = totalDefeats - bossDefeats - eliteDefeats;
+
+// Hiç o tür dövüş olmadıysa "%0" yazmak yanlış bilgi: oran yok.
+const rate = (won: number, total: number) =>
+  total > 0 ? `%${((won / total) * 100).toFixed(0)}` : '—';
+
+console.log(
+  `  kazanma oranı: vahşi ${rate(wildBattles - wildDefeats, wildBattles)} (${wildBattles})` +
+    ` | elite ${rate(eliteBattles - eliteDefeats, eliteBattles)} (${eliteBattles})` +
+    ` | boss ${rate(bossBattles - bossDefeats, bossBattles)} (${bossBattles})`,
+);
+console.log(
+  `  kullanılan Revive: ${sum((r) => r.revivesUsed)} / ${STARTING_REVIVES * RUNS}`,
+);
+
+const survived = reports.filter((report) => report.diedAtTile === null).length;
+const deathTiles = reports
+  .map((report) => report.diedAtTile)
+  .filter((tile): tile is number => tile !== null);
+console.log(
+  `  ${survived}/${RUNS} koşu ${MAX_TILES} kareyi tamamladı` +
+    (deathTiles.length
+      ? `, ölenlerin ortalama karesi ${avg(deathTiles).toFixed(0)}`
+      : ''),
+);

@@ -18,14 +18,28 @@ import {
   getIdsWithinBst,
   getIdsWithinBstAndType,
   MAX_POKEMON_ID,
+  POKEMON_TYPES_BY_ID,
 } from "@/lib/data/pokemonIndex";
+import { getTypeEffectiveness, toPokemonType } from "@/lib/data/typeChart";
+import {
+  getBoss,
+  getBossLevel,
+  getScaledLevelForSpecies,
+  type BossDefinition,
+} from "@/lib/data/bosses";
 import { MAP_ROWS } from "./map";
-import { getZone, THEME_CHANCE } from "./zones";
+import { getZone, getZoneIndex, getZoneLap, THEME_CHANCE } from "./zones";
 import { pickOne, randomInt, type RandomFn } from "./rng";
 import { createTeamMember } from "./team";
 import { getMoves, getPokemon, selectStartingMoveIds } from "@/lib/pokeapi";
 import { MAX_IV } from "./stats";
-import type { LearnsetEntry, Move, Pokemon, TeamMember } from "@/lib/types";
+import type {
+  LearnsetEntry,
+  Move,
+  Pokemon,
+  PokemonType,
+  TeamMember,
+} from "@/lib/types";
 
 /** Düşman verisi çekilemezse kaç kez başka bir türle denenecek. */
 const MAX_ATTEMPTS = 4;
@@ -53,6 +67,8 @@ export interface WildEnemy {
   member: TeamMember;
   /** Bu düşmanın AI ustalığı (0-1) — savaş başlatılırken motora veriliyor. */
   skill: number;
+  /** Kadrolu bir boss'sa unvanı ("the Roadwarden"); değilse null. */
+  title: string | null;
 }
 
 export interface BstRange {
@@ -115,27 +131,116 @@ export function getBstRange(
   };
 }
 
+// --- Tip eşleşmesi adaleti -------------------------------------------------
+//
+// BST aralığı "ne kadar güçlü" sorusunu çözüyor ama "hangi tip" sorusunu
+// tamamen şansa bırakıyordu. Tek başına 1v1 savaşan bir oyuncuda tip
+// eşleşmesi BST'den daha belirleyici: açılış aktında çimen bir starter'ın
+// karşısına Peck bilen bir kuş çıktığında oyuncu hem 2x hasar yiyor hem de
+// 0.5x vuruyor — yani hiçbir hatası olmadan, sırf çarkın döndüğü yer yüzünden
+// kaybediyor. Aşağıdaki süzgeç bu "duvar" eşleşmeleri seyrekleştiriyor.
+
+/** Statik tablodaki tip metnini ('grass/poison') tiplere çevirir. */
+export function getSpeciesTypes(id: number): PokemonType[] {
+  const entry = POKEMON_TYPES_BY_ID[id - 1];
+  if (entry === undefined || entry === "") return [];
+  return entry.split("/").map(toPokemonType);
+}
+
+/** Verilen tiplerin karşı tarafa vurabileceği en yüksek çarpan (STAB varsayımı). */
+function bestEffectiveness(
+  attackingTypes: readonly PokemonType[],
+  defendingTypes: readonly PokemonType[],
+): number {
+  if (attackingTypes.length === 0 || defendingTypes.length === 0) return 1;
+  return Math.max(
+    ...attackingTypes.map((type) => getTypeEffectiveness(type, defendingTypes)),
+  );
+}
+
+/**
+ * Bu tür oyuncuya karşı bir "duvar" mı?
+ *
+ * İki koşuldan biri yeterli: ya STAB'ıyla 4x vuruyor, ya da 2x vururken
+ * oyuncunun kendi STAB'ı ona 1x'ten fazlasını yapamıyor. İkinci durum tek
+ * taraflı bir savaş demek — oyuncunun elinde cevap yok.
+ */
+export function isHardCounter(
+  candidateTypes: readonly PokemonType[],
+  playerTypes: readonly PokemonType[],
+): boolean {
+  if (candidateTypes.length === 0 || playerTypes.length === 0) return false;
+
+  const againstPlayer = bestEffectiveness(candidateTypes, playerTypes);
+  if (againstPlayer >= 4) return true;
+
+  const againstCandidate = bestEffectiveness(playerTypes, candidateTypes);
+  return againstPlayer >= 2 && againstCandidate <= 1;
+}
+
+/**
+ * Süzgecin uygulanma ihtimali.
+ *
+ * Erken karelerde tam koruma: oyuncunun tek bir Pokémon'u, eşyası ve reliği
+ * yokken tip duvarına verecek bir cevabı da yok. Koşu ilerledikçe gevşiyor —
+ * altı kişilik bir takımla kötü eşleşme artık bir felaket değil, bir sebep:
+ * o yüzden takımda ikinci bir Pokémon taşıyorsun.
+ */
+export function getMatchupGuardChance(
+  kind: EncounterKind,
+  tileIndex: number,
+  teamSize = 1,
+): number {
+  const progress = getRunProgress(tileIndex);
+  // Takım büyüdükçe koruma azalır: cevabın varsa duvar duvar değildir.
+  const teamRelief = Math.min(0.5, Math.max(0, teamSize - 1) * 0.15);
+  const base = kind === "wild" ? 1 - 0.55 * progress : 0.7 - 0.7 * progress;
+  return Math.max(0, base - teamRelief);
+}
+
+/** Duvar olan türleri eler; havuz çok daralırsa süzgeci yok sayar. */
+function withoutHardCounters(
+  ids: number[],
+  playerTypes: readonly PokemonType[],
+): number[] {
+  if (playerTypes.length === 0 || ids.length === 0) return ids;
+
+  const fair = ids.filter(
+    (id) => !isHardCounter(getSpeciesTypes(id), playerTypes),
+  );
+  // Süzgeç havuzu tüketirse rakipsiz kalmaktansa duvarı kabul ediyoruz.
+  return fair.length >= Math.max(6, Math.ceil(ids.length * 0.25)) ? fair : ids;
+}
+
 /**
  * Aralığa uyan bir tür id'si seçer; aralık boşsa kademeli olarak genişletir.
  *
  * `themeType` verilirse (bölge teması) önce o tipten aday aranır — bulunamazsa
  * sessizce tipsiz seçime düşer, böylece dar aralıklarda oyun tıkanmaz.
+ *
+ * `guardAgainstTypes` verilirse oyuncunun tiplerine karşı duvar olan türler
+ * havuzdan çıkarılır (bkz. `isHardCounter`).
  */
 export function pickEnemyId(
   range: BstRange,
   random: RandomFn,
   themeType: string | null = null,
+  guardAgainstTypes: readonly PokemonType[] = [],
 ): number {
   let { min, max } = range;
 
   if (themeType !== null) {
     const themed = getIdsWithinBstAndType(min, max, themeType);
-    if (themed.length > 0) return pickOne(random, themed);
+    if (themed.length > 0) {
+      return pickOne(random, withoutHardCounters(themed, guardAgainstTypes));
+    }
   }
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const candidates = getIdsWithinBst(min, max);
-    if (candidates.length > 0) return pickOne(random, candidates);
+    if (candidates.length > 0) {
+      return pickOne(random, withoutHardCounters(candidates, guardAgainstTypes));
+    }
     min = Math.max(1, min - 60);
     max += 60;
   }
@@ -187,6 +292,15 @@ export function getEnemyIv(kind: EncounterKind, tileIndex: number): number {
   const ceiling = kind === "boss" ? MAX_IV : kind === "elite" ? 28 : 20;
   return Math.min(ceiling, Math.round(floor + (ceiling - floor) * progress));
 }
+
+/**
+ * Türü kart tarafından sabitlenen dövüşlerin güç primi.
+ *
+ * Boss'unkinden düşük — bunlar act'in doruğu değil, yoldaki bir olay. Ama
+ * sıfır da değil: "elite" etiketiyle başlayan bir dövüşün sıradan bir vahşi
+ * karşılaşmadan daha ağır olması gerekiyor.
+ */
+export const EVENT_FIGHT_PREMIUM = 0.2;
 
 /** Düşman AI'ının ustalığı (0 = rastgele, 1 = en iyi hamle). */
 export function getEnemySkill(kind: EncounterKind, tileIndex: number): number {
@@ -350,6 +464,17 @@ export interface CreateWildEnemyOptions {
   /** Verilirse level formülü yerine bu kullanılır. */
   level?: number;
   /**
+   * Oyuncunun aktif Pokémon'unun tipleri.
+   *
+   * Verilirse tip eşleşmesi adaleti devreye girer: oyuncuya karşı duvar olan
+   * türler erken karelerde havuzdan çıkarılır (bkz. `isHardCounter`).
+   */
+  playerTypes?: readonly PokemonType[];
+  /** Oyuncunun takım büyüklüğü — koruma takım büyüdükçe gevşer. */
+  teamSize?: number;
+  /** Kadrolu boss'un unvanı; sonuçta olduğu gibi geri dönüyor. */
+  title?: string;
+  /**
    * Verilirse tür rastgele seçilmez, bu tür kullanılır.
    *
    * Harita olayları için: kartta Snorlax'ın resmi varken rastgele bir Pokémon
@@ -366,8 +491,20 @@ export async function createWildEnemy(
 ): Promise<WildEnemy> {
   const random = options.random ?? Math.random;
   const kind = options.kind ?? "wild";
+
+  // Tür kart tarafından sabitlendiyse level formülü yetmiyor: BST'si düşük bir
+  // tür (Aipom, Snorlax'ın karşısında) oyuncunun level'ında hiçbir direnç
+  // göstermiyordu. Sabit türde dengeyi boss'lardaki gibi level taşıyor.
   const level =
-    options.level ?? getEnemyLevel(options.playerLevel, kind, random, tileIndex);
+    options.level ??
+    (options.speciesId !== undefined && kind !== "wild"
+      ? getScaledLevelForSpecies(
+          options.playerLevel,
+          options.playerBst,
+          options.speciesId,
+          EVENT_FIGHT_PREMIUM,
+        )
+      : getEnemyLevel(options.playerLevel, kind, random, tileIndex));
   const range = getBstRange(options.playerBst, tileIndex, kind);
   const quality = getMovesetQuality(kind, tileIndex);
   const iv = getEnemyIv(kind, tileIndex);
@@ -378,10 +515,22 @@ export async function createWildEnemy(
   const themeType =
     zone.theme !== null && random() < THEME_CHANCE ? zone.theme : null;
 
+  // Tip duvarı koruması her karşılaşmada bir kez atılır: ya bu karşılaşmanın
+  // tamamı adil havuzdan gelir ya da havuz serbesttir.
+  const guardChance = getMatchupGuardChance(
+    kind,
+    tileIndex,
+    options.teamSize ?? 1,
+  );
+  const guardAgainstTypes =
+    random() < guardChance ? (options.playerTypes ?? []) : [];
+
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-    const id = options.speciesId ?? pickEnemyId(range, random, themeType);
+    const id =
+      options.speciesId ??
+      pickEnemyId(range, random, themeType, guardAgainstTypes);
     try {
       const pokemon = await getPokemon(id);
       const moves = await loadMovesFor(pokemon, level, quality);
@@ -394,6 +543,7 @@ export async function createWildEnemy(
           ivs: iv,
         }),
         skill,
+        title: options.title ?? null,
       };
     } catch (error) {
       lastError = error;
@@ -405,4 +555,49 @@ export async function createWildEnemy(
       lastError instanceof Error ? lastError.message : "unknown error"
     }`,
   );
+}
+
+// --- Kadrolu boss'lar ------------------------------------------------------
+
+/** `createBossEnemy` için gereken her şey. */
+export interface CreateBossEnemyOptions {
+  /** Takımın ortalama level'ı — boss level'ı buna göre ölçekleniyor. */
+  playerLevel: number;
+  /** Sahaya çıkacak Pokémon'un BST'si — level ticareti buna bakıyor. */
+  playerBst: number;
+  random?: RandomFn;
+}
+
+/** Bu derinlikteki act sonu boss'unun kim olduğu (savaş öncesi göstermek için). */
+export function getBossFor(tileIndex: number): BossDefinition {
+  return getBoss(getZoneIndex(tileIndex), getZoneLap(tileIndex));
+}
+
+/**
+ * Act sonu boss'u: türü kadrodan, level'ı oyuncudan.
+ *
+ * Vahşi düşmanlardan tek farkı tür seçiminin rastgele OLMAMASI; IV, hareket
+ * seti ve AI ustalığı aynı "boss" ayarlarından geliyor.
+ */
+export async function createBossEnemy(
+  tileIndex: number,
+  options: CreateBossEnemyOptions,
+): Promise<WildEnemy> {
+  const boss = getBossFor(tileIndex);
+  const level = getBossLevel(
+    options.playerLevel,
+    options.playerBst,
+    boss.speciesId,
+    getRunProgress(tileIndex),
+  );
+
+  return createWildEnemy(tileIndex, {
+    kind: "boss",
+    playerLevel: options.playerLevel,
+    playerBst: options.playerBst,
+    speciesId: boss.speciesId,
+    level,
+    title: boss.title,
+    random: options.random,
+  });
 }

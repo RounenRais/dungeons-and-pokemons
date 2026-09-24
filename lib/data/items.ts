@@ -13,9 +13,21 @@ export interface ItemDefinition {
 const ITEM_SPRITE_BASE =
   "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items";
 
+/**
+ * Sprite'ı kendi id'siyle bulunamayan eşyalar.
+ *
+ * Link Stone oyunun kendi icadı; PokeAPI'deki en yakın karşılığı olan
+ * `linking-cord`un ise sprite'ı yok (item endpoint'i `default: null` dönüyor).
+ * Dubious Disc hem var hem de anlamı birebir aynı: takasla evrimleşen bir
+ * Pokémon'a taşıtılan eşya.
+ */
+const SPRITE_OVERRIDES: Record<string, string> = {
+  "link-stone": "dubious-disc",
+};
+
 /** Eşya görseli — id PokeAPI item slug'ıyla aynı olduğu için doğrudan türetilir. */
 export function getItemSpriteUrl(itemId: string): string {
-  return `${ITEM_SPRITE_BASE}/${itemId}.png`;
+  return `${ITEM_SPRITE_BASE}/${SPRITE_OVERRIDES[itemId] ?? itemId}.png`;
 }
 
 /** Taş gerektiren evrimleri tetikleyen eşyalar. */
@@ -82,7 +94,28 @@ export const EVOLUTION_STONES: ItemDefinition[] = [
   },
 ];
 
-const ITEMS_BY_ID = new Map(EVOLUTION_STONES.map((item) => [item.id, item]));
+/**
+ * Link Stone — takas ve "belirli yer/sayaç" evrimlerinin tek anahtarı.
+ *
+ * EVOLUTION_STONES'un içinde DEĞİL, çünkü o liste `findItemEvolution` ile
+ * slug eşleşmesine göre çalışıyor (fire-stone → fire-stone). Link Stone ise
+ * bir slug'a değil bir KURALA bakıyor: "başka hiçbir yolla ulaşılamayan
+ * evrimler" (bkz. `findLinkEvolutions`).
+ */
+export const LINK_STONE: ItemDefinition = {
+  id: "link-stone",
+  label: "Link Stone",
+  category: "evolution-stone",
+  description:
+    "Completes the evolutions a lone trainer never could: trade evolutions, and the ones that need a place or a count.",
+};
+
+/** Link Stone'un dükkanda görünmesi için gereken en düşük takım level'ı. */
+export const LINK_STONE_MIN_LEVEL = 40;
+
+const ITEMS_BY_ID = new Map(
+  [...EVOLUTION_STONES, LINK_STONE].map((item) => [item.id, item]),
+);
 
 export function getItem(itemId: string): ItemDefinition | null {
   return ITEMS_BY_ID.get(itemId) ?? null;

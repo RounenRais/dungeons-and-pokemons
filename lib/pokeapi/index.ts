@@ -19,6 +19,7 @@ export {
   extractIdFromUrl,
   findAutomaticEvolution,
   findItemEvolution,
+  findLinkEvolutions,
   getMachineLearnableMoveIds,
   selectStartingMoveIds,
   toDisplayName,

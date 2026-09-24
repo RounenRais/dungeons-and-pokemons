@@ -10,9 +10,10 @@ import { MainMenu } from "@/components/menu/MainMenu";
 import { NamePrompt } from "@/components/menu/NamePrompt";
 import { HowToPlay } from "@/components/menu/HowToPlay";
 import {
-  readLeaderboard,
+  fetchLeaderboard,
   submitRun,
   type LeaderboardEntry,
+  type LeaderboardSource,
 } from "@/lib/game/leaderboard";
 import {
   BattleScreen,
@@ -37,13 +38,25 @@ export default function GamePage() {
   const bossesDefeated = useGameStore((state) => state.bossesDefeated);
   const deepestDepth = useGameStore((state) => state.deepestDepth);
   const playerName = useGameStore((state) => state.playerName);
+  const expShare = useGameStore((state) => state.expShare);
   /**
    * Skor tablosu localStorage'da; ilk render sunucuyla aynı olsun diye boş
    * başlıyor ve hydration'dan sonra dolduruluyor.
    */
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  /**
+   * Gösterilen tablo paylaşılan sunucudan mı, yoksa sadece bu cihazdan mı
+   * geliyor? Arayüz bunu yazıyor — "global" diye gösterip yerel liste
+   * göstermek oyuncuyu yanıltır.
+   */
+  const [leaderboardSource, setLeaderboardSource] =
+    useState<LeaderboardSource>("local");
   /** Az önce eklenen koşunun satırı — menüde vurgulanıyor. */
   const [newEntryId, setNewEntryId] = useState<string | null>(null);
+  /** Koşunun tabloya yazılması bir ağ isteği; sonuç gelene kadar "saving". */
+  const [leaderboardStatus, setLeaderboardStatus] = useState<
+    "saving" | "recorded" | "missed"
+  >("saving");
   const [loadError, setLoadError] = useState<string | null>(null);
   /**
    * Koşu dışı ekranlar. Kayıtlı bir koşu varsa sayfa doğrudan oyuna
@@ -72,9 +85,13 @@ export default function GamePage() {
         useGameStore.setState({ hydrated: true });
       })
       .finally(() => {
-        // Skor tablosu da kayıtla aynı yerde (localStorage) ve aynı sebeple
-        // sonradan okunuyor: ilk render sunucununkiyle aynı kalsın.
-        if (!cancelled) setLeaderboard(readLeaderboard());
+        // Skor tablosu da kayıttan sonra yükleniyor: ilk render sunucununkiyle
+        // aynı kalsın. Global tabloya erişilemezse cihazdaki aynaya düşüyor.
+        void fetchLeaderboard().then((view) => {
+          if (cancelled) return;
+          setLeaderboard(view.entries);
+          setLeaderboardSource(view.source);
+        });
       });
 
     return () => {
@@ -94,15 +111,20 @@ export default function GamePage() {
       (max, member) => Math.max(max, member.level),
       0,
     );
-    const before = readLeaderboard();
-    const next = submitRun(store.playerName, {
+
+    // Yazma ağ üzerinden gidiyor, yani asenkron. Koşu sonu ekranı beklemiyor:
+    // tablo geldiğinde kendi kendine güncelleniyor.
+    setLeaderboardStatus("saving");
+    void submitRun(store.playerName, {
       depth: Math.max(store.deepestDepth, store.player.position),
       bestLevel,
       bossesDefeated: store.bossesDefeated,
+    }).then((result) => {
+      setLeaderboard(result.entries);
+      setLeaderboardSource(result.source);
+      setNewEntryId(result.entry?.id ?? null);
+      setLeaderboardStatus(result.source === "global" ? "recorded" : "missed");
     });
-    const known = new Set(before.map((entry) => entry.id));
-    setNewEntryId(next.find((entry) => !known.has(entry.id))?.id ?? null);
-    setLeaderboard(next);
   }
 
   function handleBattleFinish(result: BattleResult) {
@@ -122,9 +144,22 @@ export default function GamePage() {
       if (result.evolvedPokemon !== null) {
         store.registerPokemon(result.evolvedPokemon);
       }
+      // EXP Share ile evrimleşen yedeklerin yeni formları da pokédex'e girmeli,
+      // yoksa takım panelinde sprite'ları boş kalır.
+      for (const pokemon of result.registeredPokemon) {
+        store.registerPokemon(pokemon);
+      }
       if (result.capturedMember !== null && result.capturedPokemon !== null) {
         store.registerPokemon(result.capturedPokemon);
         store.addTeamMember(result.capturedMember);
+        // Yeni gelen üye bir sonraki savaştan itibaren pay alır; oyuncu bunu
+        // bilmeden gelmesin (ve kapatabileceğini de bilsin).
+        store.addLog(
+          store.expShare
+            ? `${result.capturedPokemon.displayName} will share EXP from now on. You can switch EXP Share off in the team panel.`
+            : `EXP Share is off, so ${result.capturedPokemon.displayName} will not earn EXP unless it fights.`,
+          "info",
+        );
       }
       if (result.goldDelta !== 0) store.addGold(result.goldDelta);
 
@@ -191,6 +226,7 @@ export default function GamePage() {
           }
           runModifiers={runModifiers}
           streakMultiplier={streakMultiplier}
+          expShare={expShare}
           onFinish={handleBattleFinish}
         />
       </main>
@@ -210,7 +246,7 @@ export default function GamePage() {
           bossesDefeated={bossesDefeated}
           records={records}
           leaderboardName={playerName}
-          madeLeaderboard={newEntryId !== null}
+          leaderboardStatus={leaderboardStatus}
           onRestart={() => {
             setMenuScreen("menu");
             setNewEntryId(null);
@@ -258,6 +294,7 @@ export default function GamePage() {
           <MainMenu
             records={records}
             leaderboard={leaderboard}
+            leaderboardSource={leaderboardSource}
             highlightId={newEntryId}
             onPlay={() => setMenuScreen("name")}
             onHowToPlay={() => setMenuScreen("how-to")}
