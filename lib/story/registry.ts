@@ -26,6 +26,9 @@ import { linePayout, lineReprisal, trapLine } from "./events/poacher";
 import { sunkenAltar, theList, whatFollowed } from "./events/ruins";
 import { rivalFirst, rivalLast, rivalSecond } from "./events/rival";
 import { waysideEvents } from "./events/wayside";
+import { societyEvents } from "./events/society";
+import { corruptionEvents } from "./events/corruption";
+import { lateGameEvents } from "./events/lateGame";
 import type { StoryEvent } from "./types";
 
 export const STORY_EVENTS: readonly StoryEvent[] = [
@@ -45,6 +48,9 @@ export const STORY_EVENTS: readonly StoryEvent[] = [
   rivalLast,
 
   ...waysideEvents,
+  ...societyEvents,
+  ...corruptionEvents,
+  ...lateGameEvents,
 ];
 
 const BY_ID = new Map(STORY_EVENTS.map((event) => [event.id, event]));

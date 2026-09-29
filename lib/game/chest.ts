@@ -7,7 +7,6 @@ import type { GameIconName } from "@/components/icons/GameIcons";
 import { EVOLUTION_STONES } from "@/lib/data/items";
 import { getBstRange, pickEnemyId } from "./enemy";
 import { pickOne, pickWeighted, randomInt, type RandomFn } from "./rng";
-import { calculateMaxHp } from "./stats";
 import { createTeamMember, MAX_TEAM_SIZE } from "./team";
 import {
   getEvolutionChain,
@@ -16,33 +15,41 @@ import {
   getSpecies,
   selectStartingMoveIds,
 } from "@/lib/pokeapi";
-import type { Move, Pokemon, Rarity, StatKey, TeamMember } from "@/lib/types";
+import type { Move, Pokemon, Rarity, TeamMember } from "@/lib/types";
 
-export type ChestLootKind = "gold" | "move" | "boost" | "stone" | "pokemon";
+/*
+ * `boost` KALDIRILDI.
+ *
+ * Kasalardan kalıcı ham stat düşüyordu ve kasa satın alınabilir bir şey
+ * olduğu için bu "parayla sınırsız stat" demekti. Yerine `item` geldi: sarf
+ * malzemesi (top, iksir) — güç veriyor ama harcanıyor. Ayrıntı:
+ * `docs/progression.md`.
+ */
+export type ChestLootKind = "gold" | "move" | "item" | "stone" | "pokemon";
 
 /** Tier'e göre ödül türü dağılımı. */
 const LOOT_WEIGHTS: Record<Rarity, { value: ChestLootKind; weight: number }[]> =
   {
     common: [
       { value: "gold", weight: 55 },
-      { value: "boost", weight: 30 },
+      { value: "item", weight: 30 },
       { value: "move", weight: 15 },
     ],
     rare: [
       { value: "gold", weight: 40 },
-      { value: "boost", weight: 30 },
+      { value: "item", weight: 30 },
       { value: "move", weight: 28 },
       { value: "stone", weight: 2 },
     ],
     epic: [
       { value: "gold", weight: 25 },
-      { value: "boost", weight: 30 },
+      { value: "item", weight: 30 },
       { value: "move", weight: 30 },
       { value: "stone", weight: 15 },
     ],
     legendary: [
       { value: "gold", weight: 10 },
-      { value: "boost", weight: 25 },
+      { value: "item", weight: 25 },
       { value: "move", weight: 25 },
       { value: "stone", weight: 30 },
       { value: "pokemon", weight: 10 },
@@ -57,22 +64,50 @@ const GOLD_RANGES: Record<Rarity, [number, number]> = {
   legendary: [400, 700],
 };
 
-/** Tier başına kalıcı stat artışı. */
-const BOOST_RANGES: Record<Rarity, [number, number]> = {
-  common: [2, 4],
-  rare: [4, 7],
-  epic: [7, 11],
-  legendary: [12, 18],
+/**
+ * Tier başına sarf malzemesi havuzu.
+ *
+ * Tier yükseldikçe havuz yukarı kayıyor: common kasadan Poké Ball ve Potion,
+ * legendary kasadan Ultra Ball, Max Potion ve Revive. Aynı eşyalar dükkanda da
+ * satılıyor, yani kasa "erken erişim" veriyor, benzersiz bir güç değil.
+ */
+const ITEM_POOLS: Record<Rarity, { value: string; weight: number }[]> = {
+  common: [
+    { value: "poke-ball", weight: 40 },
+    { value: "potion", weight: 30 },
+    { value: "oran-berry", weight: 20 },
+    { value: "full-heal", weight: 10 },
+  ],
+  rare: [
+    { value: "great-ball", weight: 30 },
+    { value: "super-potion", weight: 26 },
+    { value: "poke-ball", weight: 20 },
+    { value: "full-heal", weight: 14 },
+    { value: "sitrus-berry", weight: 10 },
+  ],
+  epic: [
+    { value: "ultra-ball", weight: 28 },
+    { value: "hyper-potion", weight: 26 },
+    { value: "great-ball", weight: 20 },
+    { value: "revive", weight: 16 },
+    { value: "full-heal", weight: 10 },
+  ],
+  legendary: [
+    { value: "ultra-ball", weight: 30 },
+    { value: "max-potion", weight: 24 },
+    { value: "revive", weight: 22 },
+    { value: "master-ball", weight: 8 },
+    { value: "hyper-potion", weight: 16 },
+  ],
 };
 
-const BOOSTABLE_STATS: StatKey[] = [
-  "hp",
-  "attack",
-  "defense",
-  "specialAttack",
-  "specialDefense",
-  "speed",
-];
+/** Tier başına kaç tane düşeceği. */
+const ITEM_QUANTITIES: Record<Rarity, [number, number]> = {
+  common: [1, 2],
+  rare: [1, 2],
+  epic: [2, 3],
+  legendary: [2, 4],
+};
 
 export function getChestGold(
   tier: Rarity,
@@ -83,16 +118,23 @@ export function getChestGold(
   return randomInt(random, min, max) + tileIndex * 2;
 }
 
-export function getChestBoost(tier: Rarity, random: RandomFn): number {
-  const [min, max] = BOOST_RANGES[tier];
-  return randomInt(random, min, max);
+/** Bu tier'den düşecek sarf malzemesi ve adedi. */
+export function getChestItem(
+  tier: Rarity,
+  random: RandomFn,
+): { itemId: string; quantity: number } {
+  const [min, max] = ITEM_QUANTITIES[tier];
+  const itemId = pickWeighted(random, ITEM_POOLS[tier]);
+  // Master Ball tek düşer: ikisi bir arada yakalama sistemini anlamsız kılar.
+  const quantity = itemId === "master-ball" ? 1 : randomInt(random, min, max);
+  return { itemId, quantity };
 }
 
 /** Ödülün "ne olduğu" — henüz API verisi çekilmemiş hâli. */
 export type ChestLoot =
   | { kind: "gold"; amount: number }
   | { kind: "move"; moveId: number; moveName: string }
-  | { kind: "boost"; stat: StatKey; amount: number }
+  | { kind: "item"; itemId: string; quantity: number }
   | { kind: "stone"; itemId: string }
   | { kind: "pokemon"; pokemonId: number; level: number };
 
@@ -100,7 +142,7 @@ export type ChestLoot =
 export type ResolvedChestLoot =
   | { kind: "gold"; tier: Rarity; amount: number }
   | { kind: "move"; tier: Rarity; move: Move }
-  | { kind: "boost"; tier: Rarity; stat: StatKey; amount: number }
+  | { kind: "item"; tier: Rarity; itemId: string; quantity: number }
   | { kind: "stone"; tier: Rarity; itemId: string }
   | { kind: "pokemon"; tier: Rarity; pokemon: Pokemon; member: TeamMember };
 
@@ -179,12 +221,8 @@ export function rollChestLoot(
     else return { kind: "move", ...move };
   }
 
-  if (kind === "boost") {
-    return {
-      kind: "boost",
-      stat: pickOne(random, BOOSTABLE_STATS),
-      amount: getChestBoost(context.tier, random),
-    };
+  if (kind === "item") {
+    return { kind: "item", ...getChestItem(context.tier, random) };
   }
 
   if (kind === "stone") {
@@ -258,8 +296,13 @@ export async function resolveChestLoot(
       return { kind: "pokemon", tier, pokemon, member };
     }
 
-    case "boost":
-      return { kind: "boost", tier, stat: loot.stat, amount: loot.amount };
+    case "item":
+      return {
+        kind: "item",
+        tier,
+        itemId: loot.itemId,
+        quantity: loot.quantity,
+      };
 
     case "stone":
       return { kind: "stone", tier, itemId: loot.itemId };
@@ -269,35 +312,13 @@ export async function resolveChestLoot(
   }
 }
 
-/** Stat ödülünü kalıcı boost olarak uygular. */
-export function applyChestBoost(
-  member: TeamMember,
-  pokemon: Pokemon,
-  stat: StatKey,
-  amount: number,
-): TeamMember {
-  const permanentBoosts = {
-    ...member.permanentBoosts,
-    [stat]: (member.permanentBoosts[stat] ?? 0) + amount,
-  };
-
-  if (stat !== "hp") return { ...member, permanentBoosts };
-
-  const newMaxHp = calculateMaxHp(
-    pokemon.baseStats,
-    member.level,
-    permanentBoosts,
-  );
-  return {
-    ...member,
-    permanentBoosts,
-    maxHp: newMaxHp,
-    currentHp:
-      member.currentHp > 0
-        ? Math.min(newMaxHp, member.currentHp + (newMaxHp - member.maxHp))
-        : 0,
-  };
-}
+/*
+ * `applyChestBoost` KALDIRILDI.
+ *
+ * Kasadan kalıcı stat düşmediği için uygulayacak bir şey de yok. Eski
+ * kayıtlardaki `permanentBoosts` değerleri göçte dengeli bir karşılığa
+ * çevriliyor (bkz. `lib/game/saveMigration.ts`).
+ */
 
 // --- CS:GO tarzı şerit ------------------------------------------------------
 
@@ -315,7 +336,7 @@ export const REEL_WINNER_INDEX = 41;
 const LOOT_ICONS: Record<ChestLootKind, GameIconName> = {
   gold: "coins",
   move: "spell-book",
-  boost: "muscle",
+  item: "potion",
   stone: "rune-stone",
   pokemon: "paw",
 };
@@ -323,7 +344,7 @@ const LOOT_ICONS: Record<ChestLootKind, GameIconName> = {
 const LOOT_LABELS: Record<ChestLootKind, string> = {
   gold: "Coins",
   move: "Move",
-  boost: "Boost",
+  item: "Item",
   stone: "Stone",
   pokemon: "Pokémon",
 };

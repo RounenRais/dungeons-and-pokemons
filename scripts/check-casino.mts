@@ -29,6 +29,8 @@ import {
   normaliseLines,
   type SpinOutcomeKind,
 } from "@/lib/data/casinoSymbols";
+import { buildRunModifiers } from "@/lib/game/modifiers";
+import { createRandom } from "@/lib/game/rng";
 import {
   allInBet,
   ballTripleProbability,
@@ -400,6 +402,101 @@ const BET = 100;
     fail(`a visit gives ${SPINS_PER_VISIT} spins, the design says 3`);
   }
   pass("paytable covers every outcome and a visit is 3 spins");
+}
+
+// --- 7. Kumarhane + ekonomi relikleri sonsuz döngü kurmuyor ----------------
+//
+// Asıl risk şu: bir relic kumarhane ödemesini çarpsa ve çarpan RTP'yi 1'in
+// üstüne çıkarsa, oyuncu sonsuza kadar çevirip sonsuz para üretirdi. Bunun
+// iki ayrı koruması var ve ikisi de burada ölçülüyor:
+//
+//   1. HİÇBİR relic kumarhane ödemesine dokunmuyor. `RunModifiers` içinde
+//      kumarhaneye giden bir alan yok, ve `resolveSpin` değiştirici bile
+//      almıyor — yani böyle bir relic eklenmek istense imzayı değiştirmek
+//      gerekir, ki o da bu testi kırar.
+//   2. Ziyaret act başına bir kez ve üç çevirme. Sınırsız çevirme olmadığı
+//      için negatif beklenen değer bile "sonsuz kayıp" değil, sınırlı bir bahis.
+
+{
+  const runMods = buildRunModifiers(
+    // Ekonomiye dokunan HER relic, hepsi tavanda.
+    [
+      { id: "lucky-charm", level: 3 },
+      { id: "trainer-badge", level: 3 },
+      { id: "merchant-card", level: 3 },
+      { id: "ledger", level: 3 },
+      { id: "magnet", level: 3 },
+    ],
+    [
+      { id: "coin-purse", badgeId: "a" },
+      { id: "haggler", badgeId: "b" },
+    ],
+  );
+
+  // Değiştirici paketinde kumarhaneye giden bir alan olmamalı.
+  const casinoFields = Object.keys(runMods).filter((key) =>
+    /casino|spin|slot|jackpot|payout|gamble/i.test(key),
+  );
+  if (casinoFields.length > 0) {
+    fail(`run modifiers touch the casino: ${casinoFields.join(", ")}`);
+  } else {
+    pass("no relic or badge boon can modify a casino payout");
+  }
+
+  /*
+   * Bir ziyaretin beklenen değeri.
+   *
+   * Üç çevirme, hepsi bakiyenin tamamıyla oynanmış olsa bile: RTP 1'in altında
+   * olduğu için beklenen sonuç KAYIP. Ekonomi relikleri bunu değiştirmiyor —
+   * onlar savaş ve dükkan tarafında çalışıyor.
+   */
+  const rtp = computeRtp();
+  const bet = 1000;
+  const expectedPerSpin = bet * rtp - bet;
+  const expectedPerVisit = expectedPerSpin * SPINS_PER_VISIT;
+
+  console.log(
+    `  Expected value of one visit at ${bet} coins/spin: ${expectedPerVisit.toFixed(0)} coins`,
+  );
+  if (expectedPerVisit >= 0) {
+    fail("a casino visit has a non-negative expected value");
+  } else {
+    pass("a casino visit is expected to lose coins, with or without relics");
+  }
+
+  // Gerçek bir simülasyon: 100.000 ziyaret (300.000 çevirme), hepsi all-in
+  // mantığıyla. Bakiye büyümemeli.
+  const random = createRandom(987654321);
+  let bankroll = 0;
+  for (let visit = 0; visit < 100_000; visit += 1) {
+    for (let spin = 0; spin < SPINS_PER_VISIT; spin += 1) {
+      const result = resolveSpin(spin, bet, 1, random);
+      bankroll += result.net;
+    }
+  }
+  const perSpin = bankroll / (100_000 * SPINS_PER_VISIT);
+  console.log(
+    `  100,000 visits (${(100_000 * SPINS_PER_VISIT).toLocaleString("en-US")} spins): net ${bankroll.toLocaleString("en-US")} coins (${perSpin.toFixed(1)}/spin)`,
+  );
+  if (bankroll >= 0) {
+    fail("300,000 simulated spins ended up ahead — the house edge is broken");
+  } else {
+    pass("300,000 spins end behind, so there is no positive money loop");
+  }
+
+  // Ödeme her zaman tam sayı ve negatif olamaz.
+  let payoutsValid = true;
+  const checkRandom = createRandom(24680);
+  for (let i = 0; i < 50_000; i += 1) {
+    const result = resolveSpin(0, 1 + Math.floor(checkRandom() * 5000), 1, checkRandom);
+    if (!Number.isInteger(result.payout) || result.payout < 0) payoutsValid = false;
+    if (!Number.isInteger(result.net)) payoutsValid = false;
+  }
+  if (payoutsValid) {
+    pass("50,000 spins all pay a non-negative whole number of coins");
+  } else {
+    fail("a spin produced a fractional or negative payout");
+  }
 }
 
 console.log(bad === 0 ? "\nCASINO MATH OK" : `\n${bad} PROBLEMS`);

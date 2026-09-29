@@ -1,6 +1,8 @@
 // Pure-logic checks: route map generation, starter wheel maths, stat formulas.
 // Never touches the network.
 
+import { getActCapstone } from '../lib/game/map';
+import { TOTAL_ACTS } from '../lib/game/league';
 import {
   generateMap,
   getDepth,
@@ -35,8 +37,26 @@ const nodes = Object.values(map.nodes);
 check('map has the right number of rows', map.rows, MAP_ROWS);
 check('every row has at least one node', map.rowNodes.every((row) => row.length > 0), true);
 check('nodes stay inside the column grid', nodes.every((n) => n.col >= 0 && n.col < MAP_COLUMNS), true);
-check('the top row is a single boss', map.rowNodes[MAP_ROWS - 1].length, 1);
-check('that node really is the boss', map.nodes[map.rowNodes[MAP_ROWS - 1][0]].type, 'BOSS');
+check('the top row is a single capstone', map.rowNodes[MAP_ROWS - 1].length, 1);
+/*
+ * Act'in doruk noktası artık LİGE bağlı.
+ *
+ * Eskiden her act'in tepesinde bir "BOSS" vardı ve act'ler sonsuza kadar
+ * tekrarlanıyordu. Şimdi act 0-7 Gym Leader, act 8 (Victory Road) efsanevi
+ * boss, act 9-10 lig (bkz. lib/game/league.ts).
+ */
+check('act 0 is capped by a Gym Leader', map.nodes[map.rowNodes[MAP_ROWS - 1][0]].type, 'GYM');
+check(
+  'every act is capped by the stage it belongs to',
+  Array.from({ length: TOTAL_ACTS }, (_, act) => {
+    const actMap = generateMap(12345, act);
+    const top = actMap.rowNodes[actMap.rows - 1];
+    return top.length === 1 && actMap.nodes[top[0]].type === getActCapstone(act);
+  }).every(Boolean),
+  true,
+);
+check('Victory Road is capped by a legendary', getActCapstone(8), 'BOSS');
+check('the last act is the Champion', getActCapstone(TOTAL_ACTS - 1), 'LEAGUE');
 check('the row below the boss is a rest stop', map.rowNodes[MAP_ROWS - 2].every((id) => map.nodes[id].type === 'REST'), true);
 check('the first row is always a plain battle', map.rowNodes[0].every((id) => map.nodes[id].type === 'BATTLE'), true);
 check('no elite appears in the early rows', nodes.filter((n) => n.type === 'ELITE').every((n) => n.row >= 4), true);

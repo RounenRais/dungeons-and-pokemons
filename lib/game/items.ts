@@ -2,8 +2,6 @@
 // Savaş içi kullanım motorda (lib/battle/engine.ts) ayrıca ele alınır.
 
 import { getShopItem, type ItemEffect } from "@/lib/data/shopItems";
-import { calculateMaxHp } from "./stats";
-import { STAT_REWARD_LABELS } from "./rewards";
 import type { Pokemon, TeamMember } from "@/lib/types";
 
 export interface ItemUseResult {
@@ -20,8 +18,6 @@ export function canUseItem(member: TeamMember, effect: ItemEffect): boolean {
       return member.status !== "none";
     case "revive":
       return member.currentHp <= 0;
-    case "boost":
-      return true;
     default:
       // Taş ve sandık burada değil, kendi akışlarında kullanılır.
       return false;
@@ -34,7 +30,15 @@ export function canUseItem(member: TeamMember, effect: ItemEffect): boolean {
  */
 export function applyItem(
   member: TeamMember,
-  pokemon: Pokemon,
+  /**
+   * Tür verisi.
+   *
+   * Artık kullanılmıyor — kalıcı stat eşyaları kaldırıldığı için max HP'yi
+   * yeniden hesaplamaya gerek kalmadı. Parametre imzada duruyor çünkü bütün
+   * çağıranlar (takım paneli, savaş ekranı) onu geçiyor ve kaldırmak sırf
+   * gürültü olurdu.
+   */
+  _pokemon: Pokemon,
   itemId: string,
 ): ItemUseResult | null {
   const item = getShopItem(itemId);
@@ -73,39 +77,6 @@ export function applyItem(
         },
         message: `Used ${item.label} — your Pokémon got back up.`,
       };
-
-    case "boost": {
-      const permanentBoosts = {
-        ...member.permanentBoosts,
-        [effect.stat]:
-          (member.permanentBoosts[effect.stat] ?? 0) + effect.amount,
-      };
-
-      if (effect.stat !== "hp") {
-        return {
-          member: { ...member, permanentBoosts },
-          message: `${STAT_REWARD_LABELS[effect.stat]} permanently +${effect.amount}.`,
-        };
-      }
-
-      const newMaxHp = calculateMaxHp(
-        pokemon.baseStats,
-        member.level,
-        permanentBoosts,
-      );
-      return {
-        member: {
-          ...member,
-          permanentBoosts,
-          maxHp: newMaxHp,
-          currentHp:
-            member.currentHp > 0
-              ? Math.min(newMaxHp, member.currentHp + (newMaxHp - member.maxHp))
-              : 0,
-        },
-        message: `Max HP permanently +${newMaxHp - member.maxHp}.`,
-      };
-    }
 
     default:
       return null;

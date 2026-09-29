@@ -20,7 +20,13 @@ check('starter level', STARTER_LEVEL, 5);
 check('team cap is six (guide says six)', MAX_TEAM_SIZE, 6);
 check('victory heal is read from code', guide.includes('{VICTORY_HEAL_PERCENT}%'), true);
 check('rest heal is read from code', guide.includes('{REST_HEAL_PERCENT}%'), true);
-check('node kinds', Object.keys(NODE_LABELS).length, 8);
+// Kılavuz her düğüm tipini anlatmak zorunda; sayı sabit değil, koddan geliyor.
+check('node kinds', Object.keys(NODE_LABELS).length, 11);
+check(
+  'the guide explains every node type',
+  Object.keys(NODE_LABELS).every((type) => guide.includes(`"${type}"`)),
+  true,
+);
 console.log(`INFO  victory heal = ${VICTORY_HEAL_PERCENT}%`);
 
 // Kılavuzdaki savaş resmi gerçek arena koordinatlarını kullanmalı.

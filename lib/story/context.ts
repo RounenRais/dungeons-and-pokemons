@@ -19,6 +19,15 @@ export interface StoryContext {
   /** Çantadaki eşyalar: itemId -> adet. */
   inventory: Readonly<Record<string, number>>;
   relics: readonly RelicId[];
+  /**
+   * Relik seviyeleri: relicId -> 1..3.
+   *
+   * Relikler seviyelendiği için "şu relic'in var mı" artık yeterli bir soru
+   * değil — bir olay "Seviye 2 Loaded Die taşıyorsan" diye açılabilsin.
+   */
+  relicLevels?: Readonly<Record<string, number>>;
+  /** Kazanılan Gym rozeti sayısı — olayların açılma koşulu olabiliyor. */
+  badges?: number;
   /** Savaşa çıkacak Pokémon'un tipleri; takım boşsa boş dizi. */
   activeTypes: readonly PokemonType[];
   activeLevel: number;
@@ -112,6 +121,18 @@ export function explainRequirement(
     !context.relics.includes(requirement.requiresRelic)
   ) {
     return "You do not carry the right relic";
+  }
+  if (requirement.requiresRelicLevel !== undefined) {
+    const { relicId, level } = requirement.requiresRelicLevel;
+    if ((context.relicLevels?.[relicId] ?? 0) < level) {
+      return `Requires that relic at level ${level}`;
+    }
+  }
+  if (
+    requirement.minBadges !== undefined &&
+    (context.badges ?? 0) < requirement.minBadges
+  ) {
+    return `Requires ${requirement.minBadges} badge(s)`;
   }
   if (
     requirement.activePokemonType !== undefined &&

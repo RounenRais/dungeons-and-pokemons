@@ -14,7 +14,15 @@ interface RestSiteProps {
   /** Ateşin başında biri var mı — tüccar, relic satıcısı ya da kimse. */
   visitor: CampVisitor;
   onHeal: () => void;
-  onTrain: () => void;
+  /**
+   * Takım ve Box yönetimini açar.
+   *
+   * Eskiden burada "Train" vardı ve aktif Pokémon'a kalıcı stat veriyordu.
+   * Kalıcı ham stat veren bütün kaynaklar kaldırıldı (bkz.
+   * `docs/progression.md`); yerine dinlenme durağı artık Box'a erişimin tek
+   * güvenli noktası oldu — savaş sırasında Box açılmıyor.
+   */
+  onManageParty: () => void;
   /** Ziyaretçiyle konuş (dükkanı ya da relic tezgahını açar). */
   onVisit: () => void;
 }
@@ -39,7 +47,7 @@ export function RestSite({
   canHeal,
   visitor,
   onHeal,
-  onTrain,
+  onManageParty,
   onVisit,
 }: RestSiteProps) {
   const guest = visitor === "none" ? null : VISITOR_TEXT[visitor];
@@ -82,13 +90,13 @@ export function RestSite({
 
           <button
             type="button"
-            onClick={onTrain}
+            onClick={onManageParty}
             className="route-slip px-4 py-3 text-left"
-            style={{ borderLeft: "4px solid var(--poke-yellow)" }}
+            style={{ borderLeft: "4px solid var(--poke-blue)" }}
           >
-            <span className="font-semibold">Train</span>
+            <span className="font-semibold">Party &amp; Box</span>
             <p className="text-xs text-[var(--ink-soft)]">
-              A permanent boost to one of your active Pokémon&apos;s stats.
+              Swap Pokémon between your party and your Box, or release one.
             </p>
           </button>
 

@@ -18,7 +18,6 @@ import type { ItemCategory, Pokemon, Rarity, TeamMember } from "@/lib/types";
 const CATEGORY_ORDER: ItemCategory[] = [
   "ball",
   "potion",
-  "stat-booster",
   "evolution-stone",
   "tm",
   "chest",

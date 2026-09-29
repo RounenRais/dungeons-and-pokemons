@@ -7,14 +7,71 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { BattleState } from "@/lib/battle";
-import { getOfferableRelics, type RelicId } from "@/lib/data/relics";
+import type { CatchThrow } from "@/lib/game/catching";
+import type { BadgeDefinition, ClaimedBoon } from "@/lib/data/gymBadges";
+import { getRelic, MAX_RELIC_SLOTS, type RelicId } from "@/lib/data/relics";
 import {
   buildBattleModifiers,
   buildRunModifiers,
   getStreakMultiplier,
+  getStreakStep,
   type BattleModifiers,
   type RunModifiers,
 } from "@/lib/game/modifiers";
+import {
+  dropRelic,
+  gainRelic,
+  getOfferableRelics,
+  getRelicLevel,
+  MAXED_COIN_VALUE as MAXED_COIN_VALUES,
+  normaliseRelicSlots,
+  replaceRelic,
+  rollRelicOffer,
+  type RelicSlot,
+} from "@/lib/game/relicSlots";
+import {
+  BOX_CAPACITY,
+  normaliseBox,
+  releasePokemon,
+  sendToBox,
+  storeCaught,
+  swapWithBox,
+  withdrawFromBox,
+  type CatchDestination,
+  type ReleaseRejection,
+  type StorageState,
+  type SwapRejection,
+} from "@/lib/game/box";
+import {
+  createLeagueState,
+  ELITE_FOUR_COUNT,
+  getLeagueStage,
+  getReliefOption,
+  GYM_COUNT,
+  isFinalAct,
+  TOTAL_ACTS,
+  type LeagueState,
+  type ReliefId,
+} from "@/lib/game/league";
+import { getReferenceLevel } from "@/lib/game/levelScaling";
+import {
+  backupLegacySave,
+  checkStoredName,
+  createMigrationReport,
+  deriveLeagueState,
+  describeMigration,
+  extractBoosterItems,
+  migrateRelics,
+  sanitiseGold,
+  stripPermanentBoosts,
+  type MigrationReport,
+} from "@/lib/game/saveMigration";
+import {
+  computeRunScore,
+  type DifficultyId,
+  type RunSummary,
+  type RunTicket,
+} from "@/lib/game/leaderboardSchema";
 import {
   generateMap,
   getDepth,
@@ -56,7 +113,14 @@ import {
 } from "@/lib/story/types";
 import type { Player, Pokemon, PokemonType, TeamMember } from "@/lib/types";
 
-export type GamePhase = "wheel" | "board" | "battle" | "gameover";
+/**
+ * Oyunun fazları.
+ *
+ * `victory` yeni: Champion yenildiğinde koşu BİTİYOR. Eskiden act'ler sonsuza
+ * kadar tekrarlandığı için tek çıkış `gameover`dı, yani oyunun kazanılabilir
+ * bir sonu yoktu.
+ */
+export type GamePhase = "wheel" | "board" | "battle" | "gameover" | "victory";
 
 /** Log'da gösterilen tek bir olay. */
 export interface LogEntry {
@@ -95,8 +159,15 @@ const SAVE_KEY = "pokerun:save";
  * kumarhane hiç kullanılmamış sayılıyor. Eski kayıttaki harita CASINO düğümü
  * içermiyor — harita kayda yazıldığı için yeniden üretilmiyor, yani o koşu
  * kumarhanesiz devam ediyor, bir sonraki act'ten itibaren çıkmaya başlıyor.
+ *
+ * v11 oyunun yarısını değiştirdi: act'ler lige bağlandı (8 Gym + Victory Road
+ * + Elite Four + Champion), stat boosterlar kaldırıldı, relikler seviyelendi,
+ * Pokémon Box eklendi, bütün vahşi Pokémon'lar yakalanabilir oldu. Eski kayıt
+ * SİLİNMİYOR: `lib/game/saveMigration.ts` her bloğu tek tek göç ettiriyor ve
+ * elden çıkan her şeyin karşılığını veriyor. Göç öncesi kaydın kopyası
+ * `pokerun:save:backup` altında duruyor.
  */
-export const SAVE_VERSION = 10;
+export const SAVE_VERSION = 12;
 
 /**
  * Yenilginin sonucu. Çağıran taraf (sayfa) buna bakarak doğru günlük
@@ -111,7 +182,20 @@ export interface DefeatOutcome {
   nodeId: string | null;
 }
 
-/** Koşular arası kalan rekorlar. */
+/**
+ * Koşular arası kalan rekorlar.
+ *
+ * ---------------------------------------------------------------------------
+ * ÖLÜNCE NE KALIR
+ * ---------------------------------------------------------------------------
+ * Koşu bittiğinde (yenilgi ya da şampiyonluk) AKTİF KOŞUNUN HER ŞEYİ sıfırlanır:
+ * takım, Box, altın, envanter, relikler, rozetler, hikâye durumu, harita.
+ * Kalan tek şey bu blok — yani rekorlar, ve skor tablosuna yazılmış sonuçlar.
+ *
+ * Bu blok bilinçli olarak SADECE sayaç tutuyor. İçinde bir sonraki koşuyu
+ * güçlendiren hiçbir şey yok: meta progression olarak tanımlanan tek şey
+ * "neyi başardığının kaydı".
+ */
 export interface RunRecords {
   bestDistance: number;
   bestLevel: number;
@@ -119,6 +203,14 @@ export interface RunRecords {
   totalBossesDefeated: number;
   totalRuns: number;
   totalRelics: number;
+  /** Tek bir koşuda toplanan en çok rozet. */
+  bestBadges: number;
+  /** Kaç koşuda şampiyon olundu. */
+  championships: number;
+  /** En yüksek skor (bkz. `lib/game/score.ts`). */
+  bestScore: number;
+  /** Bu cihazda yenilen toplam trainer sayısı. */
+  totalTrainerWins: number;
 }
 
 function createEmptyRecords(): RunRecords {
@@ -129,8 +221,31 @@ function createEmptyRecords(): RunRecords {
     totalBossesDefeated: 0,
     totalRuns: 0,
     totalRelics: 0,
+    bestBadges: 0,
+    championships: 0,
+    bestScore: 0,
+    totalTrainerWins: 0,
   };
 }
+
+/** Koşuda görülen ve yenilen trainer'lar — tekrar/yozlaşmış varyantlar için. */
+export interface TrainerProgress {
+  seen: string[];
+  defeated: string[];
+}
+
+function createTrainerProgress(): TrainerProgress {
+  return { seen: [], defeated: [] };
+}
+
+/** Relik teklifinin oyuncuya sorduğu şey. */
+export type RelicPrompt =
+  /** Üç seçenekten biri seçilecek. */
+  | { kind: "offer"; options: RelicId[] }
+  /** Bu relic tavanda: telafi seçilecek. */
+  | { kind: "maxed"; id: RelicId }
+  /** Slotlar dolu: bir relic bırakılacak ya da yeni relic reddedilecek. */
+  | { kind: "slots-full"; id: RelicId };
 
 /**
  * Her koşu tek bir Revive ile başlar. Yenilgi artık ucuz değil: elinde Revive
@@ -138,15 +253,29 @@ function createEmptyRecords(): RunRecords {
  * Dükkanlardan yenisini almak bu yüzden gerçek bir karar.
  */
 export const STARTING_REVIVES = 1;
-export const STARTING_POKE_BALLS = 3;
+
+/**
+ * Başlangıç topu sayısı.
+ *
+ * 3'ten 5'e çıktı. Sebep: artık BÜTÜN vahşi Pokémon'lar yakalanabilir ve
+ * yakalama takım kurmanın tek yolu. Üç topla oyuncu ilk act'te bir Pokémon
+ * yakalayıp kalanını kaybediyordu; beş top, ilk act'te takımı gerçekten
+ * kurmaya yetiyor. Poké Ball fiyatının 70'e inmesiyle birlikte ölçüldü.
+ */
+export const STARTING_POKE_BALLS = 5;
+
+export const STARTING_GOLD = 150;
+
 function createEmptyPlayer(): Player {
   return {
     team: [],
     activeIndex: 0,
-    gold: 100,
+    gold: STARTING_GOLD,
     position: 0,
-    inventory: [{ itemId: "revive", quantity: STARTING_REVIVES },
-       { itemId: "poke-ball", quantity: STARTING_POKE_BALLS },
+    inventory: [
+      { itemId: "revive", quantity: STARTING_REVIVES },
+      { itemId: "poke-ball", quantity: STARTING_POKE_BALLS },
+      { itemId: "potion", quantity: 2 },
     ],
   };
 }
@@ -178,14 +307,57 @@ interface GameState {
   /** Süren savaşın state'i; `phase === 'battle'` iken dolu. */
   battle: BattleState | null;
   log: LogEntry[];
-  /** Bu koşuda toplanan relikler (aynısı birden fazla olabilir). */
-  relics: RelicId[];
+  /**
+   * Bu koşunun relikleri — slot + seviye.
+   *
+   * Eskiden `RelicId[]` idi ve kopyalar ayrı satır açıyordu. Artık kopya
+   * seviye yükseltiyor (bkz. `lib/game/relicSlots.ts`).
+   */
+  relics: RelicSlot[];
+  /** Kazanılan rozet ödülleri (Gym başına bir tane). */
+  boons: ClaimedBoon[];
+  /** Takıma sığmayan Pokémon'lar. Koşuya ait. */
+  box: TeamMember[];
+  /** Lig ilerlemesi: rozetler, Elite Four, şampiyonluk, trainer galibiyetleri. */
+  league: LeagueState;
+  /** Bu koşuda görülen ve yenilen trainer'lar. */
+  trainers: TrainerProgress;
+  /** Koşunun zorluk kademesi — skoru ölçekliyor. */
+  difficulty: DifficultyId;
+  /**
+   * Sunucudan alınan koşu bileti.
+   *
+   * null ise koşu biletsiz başladı (tablo kurulu değil ya da ağ yoktu):
+   * oynanabilir ama herkese açık tabloya yazılamaz.
+   */
+  runTicket: RunTicket | null;
   /** Yenilmeden üst üste kazanılan savaş sayısı. */
   winStreak: number;
   /** Bu koşuda yenilen boss sayısı. */
   bossesDefeated: number;
-  /** Boss sonrası oyuncuya sunulan relik seçenekleri. */
-  pendingRelics: RelicId[] | null;
+  /**
+   * Relik ekranının oyuncuya sorduğu şey — teklif, telafi ya da slot takası.
+   * Eski adı `pendingRelics` idi ve sadece teklifi taşıyordu.
+   */
+  relicPrompt: RelicPrompt | null;
+  /** Rozet kazanıldı: oyuncu ödülünü seçecek. */
+  pendingBadge: BadgeDefinition | null;
+  /**
+   * Elite Four turunda bir sonraki savaştan önce seçilen soluklanma.
+   * null = henüz seçilmedi (panel açık).
+   */
+  pendingRelief: boolean;
+  /** Bu act'te kaç vahşi savaştan kaçıldı (Escape Rope reliği). */
+  escapesUsed: number;
+  /**
+   * Kayıt göçünün raporu.
+   *
+   * Göç bir şey değiştirdiyse dolu ve arayüz bir panelde gösteriyor; oyuncu
+   * kapatınca null'a dönüyor. Sessiz göç yok.
+   */
+  migration: MigrationReport | null;
+  /** Göç çöktüyse sebebi — arayüz "yeni koşu başlat" seçeneği gösteriyor. */
+  migrationError: string | null;
   /** Koşular arası kalan rekorlar. */
   records: RunRecords;
   /**
@@ -218,6 +390,12 @@ interface GameState {
   setExpShare: (enabled: boolean) => void;
   /** Koşu başlamadan önce adı (ya da atlandığını) kaydeder. */
   setPlayerName: (name: string | null) => void;
+  /** Koşu başlamadan önce zorluk kademesini seçer. */
+  setDifficulty: (difficulty: DifficultyId) => void;
+  /** Sunucudan alınan bileti kaydeder. null = biletsiz koşu. */
+  setRunTicket: (ticket: RunTicket | null) => void;
+  /** Göç raporu panelini kapatır. */
+  dismissMigration: () => void;
   /** Revive sayısı; 0 ise yenilgi koşuyu bitirir. */
   countRevives: () => number;
   startWithStarter: (pokemon: Pokemon, member: TeamMember) => void;
@@ -247,9 +425,77 @@ interface GameState {
    * uğramadıysa act'in başına. Revive yoksa koşu biter, faz 'gameover' olur.
    */
   applyDefeat: () => DefeatOutcome;
+
+  // --- Relikler ----------------------------------------------------------
+  /** Oyuncuya `count` relic teklif eder. */
   offerRelics: (count?: number) => void;
+  /** Teklifi/telafiyi/takası kapatır (oyuncu reddetti). */
   clearRelicOffer: () => void;
+  /**
+   * Bir relic alır.
+   *
+   * Sonuç üç şeyden biri: yeni slot, seviye atlama ya da bir SORU (tavanda
+   * ya da slotlar dolu). Soru hâlinde `relicPrompt` doluyor ve arayüz
+   * oyuncuya seçenekleri gösteriyor — relic sessizce kaybolmuyor.
+   */
   addRelic: (id: RelicId) => void;
+  /** Slotlar doluyken: bir relic bırak, yenisini al. */
+  swapRelic: (dropId: RelicId, newId: RelicId) => void;
+  /** Tavandaki bir relic'in telafisi olarak altın alır. */
+  cashInRelic: (id: RelicId) => void;
+
+  // --- Lig ---------------------------------------------------------------
+  /**
+   * Gym Leader yenildi: rozeti verir ve ödül seçimini açar.
+   *
+   * Aynı rozet ikinci kez verilmiyor — yenilgi sonrası Gym'i tekrar yenmek
+   * ikinci bir ödül üretmez.
+   */
+  awardBadge: (badge: BadgeDefinition) => boolean;
+  /** Rozet ödülünü seçer. */
+  claimBoon: (boon: ClaimedBoon) => void;
+  /** Bir trainer savaşı kazanıldı. */
+  registerTrainerWin: (trainerId: string) => void;
+  /** Bir trainer görüldü (savaş başlamadan) — tekrar çıkmasın. */
+  registerTrainerSeen: (trainerId: string) => void;
+  /** Elite Four turuna girer: takım tam iyileşir. */
+  beginEliteFour: () => void;
+  /** Bir Elite Four üyesi yenildi; soluklanma paneli açılır. */
+  completeEliteFourMember: (trainerId: string) => void;
+  /** Soluklanma seçeneğini uygular. */
+  applyRelief: (id: ReliefId) => void;
+  /** Champion yenildi: koşu kazanıldı. */
+  completeChampionRun: (trainerId: string) => void;
+  /** Escape Rope kullanıldı. Hak kalmadıysa false. */
+  useEscape: () => boolean;
+
+  // --- Takım ve Box ------------------------------------------------------
+  /**
+   * Yakalanan Pokémon'u yerleştirir.
+   *
+   * Takım doluysa Box'a gider; ikisi de doluysa `full` döner ve çağıran taraf
+   * bunu oyuncuya SÖYLEMEK zorunda.
+   */
+  storeCaughtPokemon: (member: TeamMember) => CatchDestination;
+  /** Top tüketimi, sonuç ve storage tek persist yazımında tamamlanır. */
+  settleCaptureAttempt: (result: CatchThrow) => CatchDestination | null;
+  /** Subdued hedefi top atmadan bırakır; aynı encounter tekrar açılamaz. */
+  releaseSubduedPokemon: () => boolean;
+  sendMemberToBox: (instanceId: string) => SwapRejection | null;
+  withdrawMemberFromBox: (instanceId: string) => SwapRejection | null;
+  swapMemberWithBox: (
+    teamInstanceId: string,
+    boxInstanceId: string,
+  ) => SwapRejection | null;
+  /**
+   * Pokémon'u bu koşu boyunca kalıcı olarak bırakır.
+   *
+   * Tek `set` içinde yazılıyor: çift tıklamada ikinci çağrı ilk çağrının
+   * sonucunu görüyor ve `not-found` ile reddediliyor, yani iki Pokémon
+   * silinmiyor. Karşılığında hiçbir ödül verilmiyor.
+   */
+  releaseMember: (instanceId: string) => ReleaseRejection | null;
+
   /** Günlüğe bir satır yazar. */
   addLog: (message: string, tone?: LogEntry["tone"]) => void;
   /** Savaş kazanıldı: seri artar, rekorlar güncellenir. */
@@ -313,13 +559,11 @@ interface GameState {
 
 /** `playSpin` sonucu. Reddedilen bahis oyuncuya gösterilecek sebeple döner. */
 export type SpinAttempt =
-  | { ok: true; spin: ResolvedSpin }
-  | { ok: false; reason: string };
+  { ok: true; spin: ResolvedSpin } | { ok: false; reason: string };
 
 /** `dealBlackjack` / `doubleBlackjack` sonucu. */
 export type HandAttempt =
-  | { ok: true; hand: BlackjackHand }
-  | { ok: false; reason: string };
+  { ok: true; hand: BlackjackHand } | { ok: false; reason: string };
 
 /** `applyStoryEffects` için delta paketi. Verilmeyen alan değişmez. */
 export interface StoryEffects {
@@ -363,7 +607,8 @@ function mergeStoryState(stored: unknown): StoryState {
       typeof partial.reputation === "number"
         ? clamp(partial.reputation, REPUTATION_MIN, REPUTATION_MAX)
         : base.reputation,
-    debt: typeof partial.debt === "number" ? Math.max(0, partial.debt) : base.debt,
+    debt:
+      typeof partial.debt === "number" ? Math.max(0, partial.debt) : base.debt,
     trainerRelationships: isPlainObject(partial.trainerRelationships)
       ? (partial.trainerRelationships as StoryState["trainerRelationships"])
       : base.trainerRelationships,
@@ -435,6 +680,218 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Store'un takım/Box/aktif üçlüsünü `lib/game/box.ts`in beklediği şekle çevirir.
+ *
+ * Box mantığı store'un dışında, saf fonksiyonlar olarak duruyor (test edilebilir
+ * olması için) ama store'da bu üç alan iki farklı yerde yaşıyor: `player.team`
+ * ve `box`. Bu iki yardımcı köprüyü kuruyor.
+ */
+function toStorageState(state: {
+  player: Player;
+  box: TeamMember[];
+}): StorageState {
+  return {
+    team: state.player.team,
+    box: state.box,
+    activeIndex: state.player.activeIndex,
+  };
+}
+
+function fromStorageState(
+  state: { player: Player },
+  storage: StorageState,
+): { player: Player; box: TeamMember[] } {
+  return {
+    player: {
+      ...state.player,
+      team: storage.team,
+      activeIndex: storage.activeIndex,
+    },
+    box: storage.box,
+  };
+}
+
+/**
+ * v11 göçü.
+ *
+ * ---------------------------------------------------------------------------
+ * NE DEĞİŞTİ, KARŞILIĞINDA NE VERİLDİ
+ * ---------------------------------------------------------------------------
+ *   Stat boosterlar       → altın (puan başına 25, eşya başına 310)
+ *   `permanentBoosts`     → geri alındı, max HP yeniden hesaplandı, HP ORANI
+ *                           korundu (oyuncu göçte can kaybetmiyor)
+ *   `RelicId[]`           → `RelicSlot[]`; kopya sayısı SEVİYE oldu
+ *   Kaldırılan relikler   → en yakın karşılığa eşlendi (`RELIC_RENAMES`)
+ *   Sonsuz act'ler        → lig yapısı; act tavana (`TOTAL_ACTS`) çekildi
+ *   Geçersiz ad           → `needsNewName`, kayıt bozulmadı
+ *   Bozuk altın           → sınıra çekildi
+ *   Yeni bloklar          → Box, lig, boon'lar, trainer ilerlemesi, zorluk
+ *
+ * Tür verisi (`pokedex`) kayıtta olduğu için max HP'yi doğru yeniden
+ * hesaplayabiliyoruz; olmayan türlerde max HP'ye DOKUNULMUYOR (yanlış bir
+ * hesap, eski bir değerden kötüdür).
+ */
+function migrateToV11(state: Partial<GameState>): Partial<GameState> {
+  const report = createMigrationReport();
+  report.changed = true;
+
+  const pokedex = isPlainObject(state.pokedex)
+    ? (state.pokedex as Record<number, Pokemon>)
+    : {};
+
+  // --- Ad -----------------------------------------------------------------
+  const nameCheck = checkStoredName(state.playerName);
+  report.needsNewName = nameCheck.needsNewName;
+  report.previousName = nameCheck.previousName;
+
+  // --- Takım: kalıcı stat artışlarını geri al -----------------------------
+  const player = (
+    isPlainObject(state.player) ? state.player : createEmptyPlayer()
+  ) as Player;
+  const rawTeam = Array.isArray(player.team) ? player.team : [];
+
+  let refund = 0;
+  let rebalanced = 0;
+  const team = rawTeam.map((member) => {
+    const baseStats = pokedex[member.pokemonId]?.baseStats ?? null;
+    const stripped = stripPermanentBoosts(member, baseStats);
+    if (stripped.refund > 0) {
+      refund += stripped.refund;
+      rebalanced += 1;
+    }
+    return stripped.member;
+  });
+
+  // --- Envanter: booster eşyalarını paraya çevir --------------------------
+  const boosterItems = extractBoosterItems(
+    Array.isArray(player.inventory) ? player.inventory : [],
+  );
+  refund += boosterItems.refund;
+  report.boosterItemsConverted = boosterItems.count;
+  report.membersRebalanced = rebalanced;
+  report.boosterRefund = refund;
+
+  // --- Altın --------------------------------------------------------------
+  const gold = sanitiseGold((player.gold ?? 0) + refund);
+  report.goldClamped = gold.clamped;
+
+  // --- Relikler -----------------------------------------------------------
+  const relics = migrateRelics(state.relics);
+  report.relicSlots = relics.slots;
+  report.droppedRelics = relics.dropped;
+
+  // --- Yeni bloklar -------------------------------------------------------
+  const added: string[] = [];
+  if (state.box === undefined) added.push("Pokémon Box");
+  if (state.league === undefined) added.push("Gym badges and the League");
+  if (state.difficulty === undefined) added.push("difficulty tiers");
+  report.addedBlocks = added;
+
+  /*
+   * Act tavana çekiliyor.
+   *
+   * Eski kayıtlarda act sonsuza kadar artıyordu (act 23 olabilir). Lig on bir
+   * act, o yüzden fazlası son act'e sıkıştırılıyor — ama koşu SİLİNMİYOR:
+   * oyuncu takımıyla, altınıyla ve relikleriyle Champion act'inde devam ediyor.
+   * Rozeti yok, çünkü hiç Gym savaşı yapmadı; onları oynayarak kazanacak.
+   */
+  const rawAct =
+    typeof state.act === "number" && Number.isFinite(state.act)
+      ? Math.max(0, Math.floor(state.act))
+      : 0;
+  const act = Math.min(TOTAL_ACTS - 1, rawAct);
+  if (act !== rawAct) {
+    report.addedBlocks = [
+      ...report.addedBlocks,
+      `act ${rawAct} folded into the League's final act`,
+    ];
+  }
+
+  const league = deriveLeagueState(state.league);
+  const seed =
+    typeof state.seed === "number" && Number.isFinite(state.seed)
+      ? state.seed
+      : createSeed();
+
+  report.notes = describeMigration(report);
+
+  return {
+    ...state,
+    playerName: nameCheck.name,
+    act,
+    seed,
+    player: {
+      ...player,
+      team,
+      inventory: boosterItems.inventory,
+      gold: gold.gold,
+      activeIndex: Math.max(
+        0,
+        Math.min(player.activeIndex ?? 0, Math.max(0, team.length - 1)),
+      ),
+    },
+    relics: relics.slots,
+    boons: Array.isArray(state.boons) ? state.boons : [],
+    box: normaliseBox(state.box),
+    league,
+    trainers: isPlainObject(state.trainers)
+      ? (state.trainers as TrainerProgress)
+      : createTrainerProgress(),
+    difficulty: state.difficulty ?? "normal",
+    runTicket: null,
+    relicPrompt: null,
+    pendingBadge: null,
+    pendingRelief: false,
+    escapesUsed: 0,
+    /*
+     * Yarıda kalmış bir savaş atılıyor.
+     *
+     * `BattleState`in şekli değişti (enemyTeam, catchable, isTrainerBattle
+     * eklendi) ve eski bir savaşı yeni motorda sürdürmek `undefined.length`
+     * ile patlar. Koşu haritadan devam ediyor, yani kaybedilen şey tek bir
+     * savaş.
+     */
+    battle: null,
+    phase:
+      state.phase === "battle"
+        ? "board"
+        : ((state.phase ?? "wheel") as GamePhase),
+    migration: report,
+    migrationError: null,
+  };
+}
+
+/**
+ * Koşunun skor tablosuna gönderilecek özeti.
+ *
+ * Skorun KENDİSİ burada hesaplanmıyor — `computeRunScore` ayrı bir modülde ve
+ * sunucu da onu çağırıyor (bkz. `lib/game/score.ts`). Burada sadece ham veri
+ * toplanıyor: sunucuya puan değil ÖZET gidiyor.
+ */
+export function buildRunSummary(state: {
+  player: Player;
+  box: TeamMember[];
+  league: LeagueState;
+  difficulty: DifficultyId;
+  deepestDepth: number;
+}): RunSummary {
+  const bestLevel = [...state.player.team, ...state.box].reduce(
+    (max, member) => Math.max(max, member.level),
+    0,
+  );
+
+  return {
+    bestLevel,
+    badges: state.league.badges.length,
+    eliteFourDefeated: state.league.eliteFourDefeated.length,
+    champion: state.league.champion,
+    trainerWins: state.league.trainerWins,
+    depth: Math.max(state.deepestDepth, state.player.position),
+    difficulty: state.difficulty,
+  };
+}
+
 let logCounter = 0;
 
 export const useGameStore = create<GameState>()(
@@ -453,9 +910,20 @@ export const useGameStore = create<GameState>()(
       battle: null,
       log: [],
       relics: [],
+      boons: [],
+      box: [],
+      league: createLeagueState(),
+      trainers: createTrainerProgress(),
+      difficulty: "normal",
+      runTicket: null,
       winStreak: 0,
       bossesDefeated: 0,
-      pendingRelics: null,
+      relicPrompt: null,
+      pendingBadge: null,
+      pendingRelief: false,
+      escapesUsed: 0,
+      migration: null,
+      migrationError: null,
       records: createEmptyRecords(),
       story: createStoryState(),
       casino: createCasinoState(),
@@ -465,7 +933,18 @@ export const useGameStore = create<GameState>()(
 
       setPlayerName: (playerName) => set({ playerName }),
       setExpShare: (expShare) => set({ expShare }),
+      setDifficulty: (difficulty) => set({ difficulty }),
+      setRunTicket: (runTicket) => set({ runTicket }),
+      dismissMigration: () => set({ migration: null, migrationError: null }),
 
+      /**
+       * Koşuyu tamamen sıfırlar.
+       *
+       * Ölüm ve şampiyonluk sonrası ikisi de buradan geçiyor: aktif koşuya ait
+       * HİÇBİR ŞEY kalmıyor (takım, Box, altın, envanter, relic, rozet, hikâye,
+       * harita, bilet). Sadece `records` ve oyuncu tercihi olan `expShare`
+       * yaşamaya devam ediyor.
+       */
       newGame: () => {
         logCounter = 0;
         get().commitRecords();
@@ -483,9 +962,17 @@ export const useGameStore = create<GameState>()(
           battle: null,
           log: [],
           relics: [],
+          boons: [],
+          box: [],
+          league: createLeagueState(),
+          trainers: createTrainerProgress(),
+          runTicket: null,
           winStreak: 0,
           bossesDefeated: 0,
-          pendingRelics: null,
+          relicPrompt: null,
+          pendingBadge: null,
+          pendingRelief: false,
+          escapesUsed: 0,
           story: createStoryState(),
           casino: createCasinoState(),
           playerName: null,
@@ -493,7 +980,12 @@ export const useGameStore = create<GameState>()(
       },
 
       startWithStarter: (pokemon, member) => {
-        const seed = createSeed();
+        // Harita tohumu: bilet varsa SUNUCUNUN verdiği tohum kullanılıyor.
+        // Böylece "hangi haritayı oynadım" sorusunun sunucu tarafında bir
+        // karşılığı oluyor (bkz. docs/leaderboard.md).
+        const ticket = get().runTicket;
+        const seed = ticket?.seed ?? createSeed();
+
         set({
           phase: "board",
           seed,
@@ -503,9 +995,16 @@ export const useGameStore = create<GameState>()(
           act: 0,
           deepestDepth: 0,
           relics: [],
+          boons: [],
+          box: [],
+          league: createLeagueState(),
+          trainers: createTrainerProgress(),
           winStreak: 0,
           bossesDefeated: 0,
-          pendingRelics: null,
+          relicPrompt: null,
+          pendingBadge: null,
+          pendingRelief: false,
+          escapesUsed: 0,
           story: createStoryState(),
           casino: createCasinoState(),
           player: { ...createEmptyPlayer(), team: [member] },
@@ -514,7 +1013,7 @@ export const useGameStore = create<GameState>()(
           log: [
             {
               id: (logCounter += 1),
-              message: `${pokemon.displayName} joined you. Your adventure begins.`,
+              message: `${pokemon.displayName} joined you. Eight badges stand between you and the League.`,
               tone: "good",
             },
           ],
@@ -554,15 +1053,26 @@ export const useGameStore = create<GameState>()(
           };
         }),
 
+      /**
+       * Sonraki act'e geçer.
+       *
+       * Son act'ten (Champion) sonra ilerleme YOK: koşu orada bitiyor ve
+       * `completeChampionRun` devreye giriyor. Eskiden act'ler sonsuza kadar
+       * artıyordu; bu satır o sonsuzluğu kapatıyor.
+       */
       advanceAct: () =>
         set((state) => {
-          const act = state.act + 1;
+          if (isFinalAct(state.act)) return state;
+
+          const act = Math.min(TOTAL_ACTS - 1, state.act + 1);
           return {
             act,
             map: generateMap(state.seed, act),
             currentNodeId: null,
             // Yeni act, yeni harita: eski kontrol noktası artık geçersiz.
             lastRestNodeId: null,
+            // Escape Rope hakkı act başına: yeni act'te yenilenir.
+            escapesUsed: 0,
             deepestDepth: Math.max(state.deepestDepth, getDepth(act, 0)),
             player: { ...state.player, position: getDepth(act, 0) },
           };
@@ -675,9 +1185,27 @@ export const useGameStore = create<GameState>()(
           state.player.inventory.find((entry) => entry.itemId === "revive")
             ?.quantity ?? 0;
 
-        // Revive yoksa koşu biter; rekorlar korunur.
+        /*
+         * Revive yoksa koşu biter.
+         *
+         * Faz `gameover` oluyor; AKTİF KOŞU burada silinmiyor çünkü koşu sonu
+         * ekranı hâlâ takımı ve istatistikleri gösteriyor ve skor gönderimi
+         * bu veriyi okuyor. Gerçek sıfırlama `newGame`de: oyuncu "yeni koşu"
+         * dediğinde takım, Box, altın, envanter, relic, rozet, hikâye ve
+         * harita tamamen gidiyor. Kalan tek şey `records` ve tabloya yazılmış
+         * sonuçlar.
+         */
         if (revives <= 0) {
-          set({ battle: null, phase: "gameover", winStreak: 0 });
+          set({
+            battle: null,
+            phase: "gameover",
+            winStreak: 0,
+            // Yarıda kalmış panelleri kapat: koşu sonu ekranının üstünde
+            // bir relic teklifi açık kalmasın.
+            relicPrompt: null,
+            pendingBadge: null,
+            pendingRelief: false,
+          });
           return { runEnded: true, returnedTo: "none", nodeId: null };
         }
 
@@ -735,35 +1263,482 @@ export const useGameStore = create<GameState>()(
 
       offerRelics: (count = 3) =>
         set((state) => {
-          const pool = getOfferableRelics(state.relics);
-          const picked: RelicId[] = [];
-          const remaining = [...pool];
-          while (picked.length < count && remaining.length > 0) {
-            const index = Math.floor(Math.random() * remaining.length);
-            picked.push(remaining[index]);
-            remaining.splice(index, 1);
-          }
-          return { pendingRelics: picked.length > 0 ? picked : null };
+          const picked = rollRelicOffer(state.relics, count, Math.random);
+          return {
+            relicPrompt:
+              picked.length > 0 ? { kind: "offer", options: picked } : null,
+          };
         }),
 
-      clearRelicOffer: () => set({ pendingRelics: null }),
+      clearRelicOffer: () => set({ relicPrompt: null }),
 
       addRelic: (id) =>
+        set((state) => {
+          const outcome = gainRelic(state.relics, id);
+
+          switch (outcome.kind) {
+            case "added":
+            case "upgraded":
+              return {
+                relics: outcome.slots,
+                relicPrompt: null,
+                records: {
+                  ...state.records,
+                  // Sadece YENİ relic sayılıyor: seviye atlamak ikinci bir
+                  // relic toplamak değil.
+                  totalRelics:
+                    state.records.totalRelics +
+                    (outcome.kind === "added" ? 1 : 0),
+                },
+              };
+
+            case "maxed":
+              // Boşa gitmiyor: oyuncuya telafi soruluyor.
+              return { relicPrompt: { kind: "maxed", id } };
+
+            case "slots-full":
+              // Sessizce kaybolmuyor ve zorla girmiyor: karar oyuncunun.
+              return { relicPrompt: { kind: "slots-full", id } };
+
+            default:
+              return state;
+          }
+        }),
+
+      swapRelic: (dropId, newId) =>
         set((state) => ({
-          relics: [...state.relics, id],
-          pendingRelics: null,
+          relics: replaceRelic(state.relics, dropId, newId),
+          relicPrompt: null,
           records: {
             ...state.records,
             totalRelics: state.records.totalRelics + 1,
           },
         })),
 
+      cashInRelic: (id) =>
+        set((state) => {
+          const relic = getRelic(id);
+          if (relic === undefined) return { relicPrompt: null };
+
+          const value = MAXED_COIN_VALUES[relic.rarity];
+          return {
+            relicPrompt: null,
+            player: {
+              ...state.player,
+              gold: Math.max(0, state.player.gold + value),
+            },
+          };
+        }),
+
+      // --- Lig --------------------------------------------------------------
+
+      awardBadge: (badge) => {
+        let awarded = false;
+        set((state) => {
+          // Aynı rozet ikinci kez verilmiyor: yenilgi sonrası Gym'i tekrar
+          // yenmek ikinci bir rozet ya da ikinci bir ödül üretmez.
+          if (state.league.badges.includes(badge.id)) return state;
+          if (state.league.badges.length >= GYM_COUNT) return state;
+
+          awarded = true;
+          return {
+            league: {
+              ...state.league,
+              badges: [...state.league.badges, badge.id],
+            },
+            // Ödül seçimi hemen açılıyor.
+            pendingBadge: badge,
+          };
+        });
+        return awarded;
+      },
+
+      claimBoon: (boon) =>
+        set((state) => {
+          // Aynı boon iki kez alınamaz — `type-edge` tip başına bir kez.
+          const already = state.boons.some(
+            (entry) => entry.id === boon.id && entry.type === boon.type,
+          );
+          return {
+            pendingBadge: null,
+            boons: already ? state.boons : [...state.boons, boon],
+          };
+        }),
+
+      registerTrainerSeen: (trainerId) =>
+        set((state) =>
+          state.trainers.seen.includes(trainerId)
+            ? state
+            : {
+                trainers: {
+                  ...state.trainers,
+                  seen: [...state.trainers.seen, trainerId],
+                },
+              },
+        ),
+
+      registerTrainerWin: (trainerId) =>
+        set((state) => {
+          const defeated = state.trainers.defeated.includes(trainerId)
+            ? state.trainers.defeated
+            : [...state.trainers.defeated, trainerId];
+
+          return {
+            trainers: {
+              seen: state.trainers.seen.includes(trainerId)
+                ? state.trainers.seen
+                : [...state.trainers.seen, trainerId],
+              defeated,
+            },
+            league: {
+              ...state.league,
+              trainerWins: state.league.trainerWins + 1,
+            },
+            records: {
+              ...state.records,
+              totalTrainerWins: state.records.totalTrainerWins + 1,
+            },
+          };
+        }),
+
+      /**
+       * Elite Four turuna girer.
+       *
+       * Tur BAŞLAMADAN önce takım tamamen iyileşiyor — dört ardışık savaşa
+       * hasarlı girmek bir zorluk değil bir duvar olurdu. Ama üyeler ARASINDA
+       * otomatik iyileşme yok (bkz. `applyRelief`).
+       */
+      beginEliteFour: () =>
+        set((state) => ({
+          league: {
+            ...state.league,
+            eliteFourStarted: true,
+            eliteFourIndex: state.league.eliteFourDefeated.length,
+          },
+          player: {
+            ...state.player,
+            team: healTeamMembers(state.player.team),
+          },
+        })),
+
+      completeEliteFourMember: (trainerId) =>
+        set((state) => {
+          const already = state.league.eliteFourDefeated.includes(trainerId);
+          const eliteFourDefeated = already
+            ? state.league.eliteFourDefeated
+            : [...state.league.eliteFourDefeated, trainerId];
+
+          return {
+            league: {
+              ...state.league,
+              eliteFourDefeated,
+              eliteFourIndex: Math.min(
+                ELITE_FOUR_COUNT,
+                eliteFourDefeated.length,
+              ),
+            },
+            // Sıradaki savaştan önce soluklanma paneli açılıyor; tur
+            // bittiyse açılmıyor.
+            pendingRelief: eliteFourDefeated.length < ELITE_FOUR_COUNT,
+          };
+        }),
+
+      applyRelief: (id) =>
+        set((state) => {
+          const option = getReliefOption(id);
+
+          const team = state.player.team.map((member) => {
+            if (option.healPercent === 0) return member;
+            if (member.currentHp <= 0) return member; // bayılmış üye iyileşmiyor
+            return {
+              ...member,
+              currentHp: Math.min(
+                member.maxHp,
+                member.currentHp +
+                  Math.ceil((member.maxHp * option.healPercent) / 100),
+              ),
+              ...(option.curesStatus
+                ? { status: "none" as const, statusTurns: 0 }
+                : {}),
+            };
+          });
+
+          return {
+            pendingRelief: false,
+            player: {
+              ...state.player,
+              team,
+              gold: Math.max(0, state.player.gold + option.gold),
+            },
+          };
+        }),
+
+      /**
+       * Champion yenildi: koşu KAZANILDI.
+       *
+       * Faz `victory` oluyor ve koşu orada duruyor. Skor gönderimi bu fazda
+       * yapılıyor (bkz. `app/page.tsx`), ardından oyuncu yeni bir koşu
+       * başlatıyor.
+       */
+      completeChampionRun: (trainerId) =>
+        set((state) => {
+          const defeated = state.trainers.defeated.includes(trainerId)
+            ? state.trainers.defeated
+            : [...state.trainers.defeated, trainerId];
+
+          return {
+            phase: "victory",
+            battle: null,
+            league: {
+              ...state.league,
+              champion: true,
+              trainerWins: state.league.trainerWins + 1,
+            },
+            trainers: { ...state.trainers, defeated },
+            records: {
+              ...state.records,
+              championships: state.records.championships + 1,
+              totalTrainerWins: state.records.totalTrainerWins + 1,
+            },
+          };
+        }),
+
+      useEscape: () => {
+        let used = false;
+        set((state) => {
+          const allowed = buildRunModifiers(
+            state.relics,
+            state.boons,
+          ).escapesPerAct;
+          if (state.escapesUsed >= allowed) return state;
+          used = true;
+          return { escapesUsed: state.escapesUsed + 1 };
+        });
+        return used;
+      },
+
+      // --- Takım ve Box -----------------------------------------------------
+
+      storeCaughtPokemon: (member) => {
+        let destination: CatchDestination = "full";
+        set((state) => {
+          const result = storeCaught(state.player.team, state.box, member);
+          destination = result.destination;
+          if (result.destination === "full") return state;
+
+          return {
+            player: { ...state.player, team: result.team },
+            box: result.box,
+          };
+        });
+        return destination;
+      },
+
+      settleCaptureAttempt: (result) => {
+        let destination: CatchDestination | null = null;
+        set((state) => {
+          const battle = state.battle;
+          const resolution = battle?.captureResolution;
+          if (
+            battle === null ||
+            resolution === undefined ||
+            battle.isTrainerBattle ||
+            !battle.catchable ||
+            battle.outcome !== "win" ||
+            resolution.phase !== "subdued" ||
+            resolution.attemptUsed ||
+            resolution.resultApplied ||
+            !result.thrown
+          ) return state;
+
+          const ballIndex = state.player.inventory.findIndex(
+            (entry) => entry.itemId === result.ballId && entry.quantity > 0,
+          );
+          if (ballIndex < 0) return state;
+
+          const inventory = state.player.inventory
+            .map((entry, index) => index === ballIndex
+              ? { ...entry, quantity: entry.quantity - 1 }
+              : entry)
+            .filter((entry) => entry.quantity > 0);
+
+          let team = state.player.team;
+          let box = state.box;
+          if (result.caught) {
+            const captured: TeamMember = {
+              ...battle.enemy.member,
+              currentHp: battle.enemy.maxHp,
+              maxHp: battle.enemy.maxHp,
+              status: "none",
+              statusTurns: 0,
+            };
+            const stored = storeCaught(team, box, captured);
+            destination = stored.destination;
+            team = stored.team;
+            box = stored.box;
+          }
+
+          return {
+            player: { ...state.player, team, inventory },
+            box,
+            pokedex: result.caught && destination !== "full"
+              ? { ...state.pokedex, [battle.enemy.pokemon.id]: battle.enemy.pokemon }
+              : state.pokedex,
+            battle: {
+              ...battle,
+              captureResolution: {
+                ...resolution,
+                attemptUsed: true,
+                selectedBallId: result.ballId,
+                resultApplied: true,
+                phase: result.caught ? "capture-success" : "capture-failed",
+                capturedPokemonInstanceId:
+                  result.caught && destination !== "full"
+                    ? battle.enemy.member.instanceId
+                    : undefined,
+                storageDestination: result.caught
+                  ? (destination ?? undefined)
+                  : undefined,
+              },
+            },
+          };
+        });
+        return destination;
+      },
+
+      releaseSubduedPokemon: () => {
+        let released = false;
+        set((state) => {
+          const battle = state.battle;
+          const resolution = battle?.captureResolution;
+          if (
+            battle === null ||
+            resolution === undefined ||
+            resolution.phase !== "subdued" ||
+            resolution.attemptUsed ||
+            resolution.resultApplied
+          ) return state;
+          released = true;
+          return {
+            battle: {
+              ...battle,
+              captureResolution: {
+                ...resolution,
+                phase: "released",
+                resultApplied: true,
+              },
+            },
+          };
+        });
+        return released;
+      },
+
+      sendMemberToBox: (instanceId) => {
+        let reason: SwapRejection | null = null;
+        set((state) => {
+          const result = sendToBox(toStorageState(state), instanceId);
+          if (!result.ok) {
+            reason = result.reason;
+            return state;
+          }
+          return fromStorageState(state, result.state);
+        });
+        return reason;
+      },
+
+      withdrawMemberFromBox: (instanceId) => {
+        let reason: SwapRejection | null = null;
+        set((state) => {
+          const result = withdrawFromBox(toStorageState(state), instanceId);
+          if (!result.ok) {
+            reason = result.reason;
+            return state;
+          }
+          return fromStorageState(state, result.state);
+        });
+        return reason;
+      },
+
+      swapMemberWithBox: (teamInstanceId, boxInstanceId) => {
+        let reason: SwapRejection | null = null;
+        set((state) => {
+          const result = swapWithBox(
+            toStorageState(state),
+            teamInstanceId,
+            boxInstanceId,
+          );
+          if (!result.ok) {
+            reason = result.reason;
+            return state;
+          }
+          return fromStorageState(state, result.state);
+        });
+        return reason;
+      },
+
+      /**
+       * Pokémon'u bırakır.
+       *
+       * Tek `set` içinde okunuyor ve yazılıyor: hızlı çift tıklamada ikinci
+       * çağrı ilk çağrının sonucunu (Pokémon artık listede yok) görüyor ve
+       * `not-found` ile reddediliyor. İki Pokémon silinmesi bu yüzden mümkün
+       * değil. İşlem ayrıca koşu günlüğüne yazılıyor.
+       */
+      releaseMember: (instanceId) => {
+        let reason: ReleaseRejection | null = null;
+        set((state) => {
+          const result = releasePokemon(toStorageState(state), instanceId);
+          if (!result.ok) {
+            reason = result.reason;
+            return state;
+          }
+
+          const released = result.released;
+          const name =
+            released?.nickname ??
+            state.pokedex[released?.pokemonId ?? -1]?.displayName ??
+            "A Pokémon";
+
+          return {
+            ...fromStorageState(state, result.state),
+            log: [
+              {
+                id: (logCounter += 1),
+                message: `${name} (Lv ${released?.level ?? "?"}) was released. It will not come back this run.`,
+                tone: "bad" as const,
+              },
+              ...state.log,
+            ].slice(0, MAX_LOG_ENTRIES),
+          };
+        });
+        return reason;
+      },
+
       registerWin: (isBoss) =>
         set((state) => {
           const winStreak = state.winStreak + 1;
+          // Cursed relikler (Renegade Shard) her savaştan sonra corruption
+          // ekliyor; Salt Pouch bunu azaltıyor.
+          const mods = buildRunModifiers(state.relics, state.boons);
+          const corruptionGain = Math.max(
+            0,
+            mods.corruptionPerBattle - mods.corruptionReduction,
+          );
+
           return {
             winStreak,
             bossesDefeated: state.bossesDefeated + (isBoss ? 1 : 0),
+            story:
+              corruptionGain > 0
+                ? {
+                    ...state.story,
+                    corruption: clamp(
+                      state.story.corruption + corruptionGain,
+                      0,
+                      CORRUPTION_MAX,
+                    ),
+                  }
+                : state.story,
             records: {
               ...state.records,
               bestStreak: Math.max(state.records.bestStreak, winStreak),
@@ -778,10 +1753,14 @@ export const useGameStore = create<GameState>()(
           // Hiç başlamamış bir koşu rekorlara yazılmaz.
           if (state.player.team.length === 0) return state;
 
-          const bestMemberLevel = state.player.team.reduce(
+          // En yüksek level Box'takileri de sayıyor: bankta duran bir level 80
+          // Pokémon o koşuda kazanılmış bir şey.
+          const bestMemberLevel = [...state.player.team, ...state.box].reduce(
             (max, member) => Math.max(max, member.level),
             0,
           );
+          const score = computeRunScore(buildRunSummary(state));
+
           return {
             records: {
               ...state.records,
@@ -792,6 +1771,11 @@ export const useGameStore = create<GameState>()(
                 Math.max(state.deepestDepth, state.player.position),
               ),
               bestLevel: Math.max(state.records.bestLevel, bestMemberLevel),
+              bestBadges: Math.max(
+                state.records.bestBadges,
+                state.league.badges.length,
+              ),
+              bestScore: Math.max(state.records.bestScore, score),
               totalRuns: state.records.totalRuns + 1,
             },
           };
@@ -1056,7 +2040,10 @@ export const useGameStore = create<GameState>()(
         }),
 
       doubleBlackjack: () => {
-        let result: HandAttempt = { ok: false, reason: "You cannot double now." };
+        let result: HandAttempt = {
+          ok: false,
+          reason: "You cannot double now.",
+        };
 
         set((state) => {
           const session = state.casino.session;
@@ -1135,7 +2122,56 @@ export const useGameStore = create<GameState>()(
     {
       name: SAVE_KEY,
       version: SAVE_VERSION,
-      storage: createJSONStorage(() => localStorage),
+      /**
+       * Depolama sarmalayıcısı: göç ÖNCESİ kaydı yedekliyor.
+       *
+       * Yedek `migrate` içinde alınamaz, çünkü orada elimizde ayrıştırılmış
+       * bir obje var — ham metin değil. Ve ham metin önemli: göç bir alanı
+       * yanlış okuduysa geri dönülecek şey orijinal JSON'un kendisi.
+       *
+       * O yüzden okuma anında araya giriyoruz: kayıttaki sürüm güncel
+       * sürümden küçükse (ya da kayıt hiç ayrıştırılamıyorsa) ham metin
+       * `pokerun:save:backup` altına kopyalanıyor. İlk yedek korunuyor;
+       * ikinci bir göç onu ezmiyor.
+       */
+      storage: createJSONStorage(() => {
+        /*
+         * `localStorage`a BURADA dokunuyoruz, sarmalayıcıyı döndürmeden önce.
+         *
+         * zustand bu fabrikayı try/catch içinde çağırıyor: fırlatırsa
+         * kalıcılığı sessizce kapatıyor. Eskiden fabrika `() => localStorage`
+         * olduğu için sunucuda (ve localStorage'ı taklit etmeyen testlerde)
+         * doğal olarak fırlıyordu. Sarmalayıcıya geçince fabrika BAŞARILI
+         * oluyordu ve hata ilk okumaya, yani zustand'ın yakalamadığı yere
+         * kayıyordu. Bu satır o davranışı geri getiriyor.
+         */
+        const store = localStorage;
+
+        return {
+          getItem: (name: string): string | null => {
+            const raw = store.getItem(name);
+            if (raw === null) return null;
+
+            try {
+              const parsed = JSON.parse(raw) as { version?: unknown };
+              const version =
+                typeof parsed.version === "number" ? parsed.version : 0;
+              if (version < SAVE_VERSION) backupLegacySave(raw);
+            } catch {
+              // Bozuk JSON: göç zaten çökecek, ama ham metni saklıyoruz ki
+              // oyuncunun koşusu tamamen kaybolmasın.
+              backupLegacySave(raw);
+            }
+            return raw;
+          },
+          setItem: (name: string, value: string): void => {
+            store.setItem(name, value);
+          },
+          removeItem: (name: string): void => {
+            store.removeItem(name);
+          },
+        };
+      }),
       /**
        * Eski kayıtları silmek yerine onarıyoruz: koşunun kendisi (takım, altın,
        * konum, relikler) uyumlu; sadece yarıda kalmış savaşın şekli değişti.
@@ -1174,6 +2210,33 @@ export const useGameStore = create<GameState>()(
           state = { ...state, casino: { ...casino, session: null } };
         }
 
+        /*
+         * v11 — büyük göç.
+         *
+         * Buradaki her adım bir ŞEY VERİYOR ya da bir şeyi KORUYOR; hiçbiri
+         * sessizce silmiyor. Rapor `state.migration` içinde birikiyor ve
+         * arayüz bunu oyuncuya gösteriyor.
+         *
+         * Göç bir istisna atarsa `onRehydrateStorage` bunu yakalıyor ve
+         * `migrationError` doluyor: oyuncu açık bir hata ve "yeni koşu" seçeneği
+         * görüyor, boş bir kayıtla sessizce açılmıyor.
+         */
+        if (version < 11) {
+          state = migrateToV11(state);
+        }
+
+        // v12 changed wild battles from live capture to a persisted, single
+        // post-battle attempt. An old in-progress battle has no encounter
+        // resolution token, so resume it from the board instead of inventing
+        // a second roll or consuming an item without proof.
+        if (version < 12 && state.battle !== null && state.battle !== undefined) {
+          state = {
+            ...state,
+            battle: null,
+            phase: state.phase === "battle" ? "board" : state.phase,
+          };
+        }
+
         return state;
       },
       // Hydration'ı elle tetikliyoruz: sunucu ve istemcinin ilk render'ı
@@ -1193,7 +2256,16 @@ export const useGameStore = create<GameState>()(
         battle: state.battle,
         log: state.log,
         relics: state.relics,
-        pendingRelics: state.pendingRelics,
+        boons: state.boons,
+        box: state.box,
+        league: state.league,
+        trainers: state.trainers,
+        difficulty: state.difficulty,
+        runTicket: state.runTicket,
+        relicPrompt: state.relicPrompt,
+        pendingBadge: state.pendingBadge,
+        pendingRelief: state.pendingRelief,
+        escapesUsed: state.escapesUsed,
         winStreak: state.winStreak,
         bossesDefeated: state.bossesDefeated,
         records: state.records,
@@ -1201,22 +2273,55 @@ export const useGameStore = create<GameState>()(
         casino: state.casino,
         playerName: state.playerName,
         expShare: state.expShare,
+        // `migration` bilerek KAYDEDİLMİYOR: göç raporu bir kez gösterilip
+        // kapanan bir bildirim, kayda yazılırsa her açılışta tekrar çıkar.
       }),
       onRehydrateStorage: () => (state) => {
-        // Log id sayacını kayıttaki en büyük id'nin üstüne taşı ki
-        // yeni satırlar eskileriyle çakışmasın.
         if (state) {
-          logCounter = state.log.reduce(
+          // Log id sayacını kayıttaki en büyük id'nin üstüne taşı ki
+          // yeni satırlar eskileriyle çakışmasın.
+          logCounter = (state.log ?? []).reduce(
             (max, entry) => Math.max(max, entry.id),
             0,
           );
-          // `migrate` sadece sürüm atlarken çalışıyor. Güncel sürümlü ama
-          // hikâye bloğu eksik/bozuk bir kayıt (yarım yazma, elle düzenleme)
-          // buradan da onarılıyor.
+
+          /*
+           * `migrate` sadece SÜRÜM ATLARKEN çalışıyor. Aşağıdaki onarımlar
+           * güncel sürümlü ama bozuk bir kayıt için (yarım yazma, elle
+           * düzenleme, kota dolu bir yazma) savunma hattı.
+           */
           state.story = mergeStoryState(state.story);
           state.casino = mergeCasinoState(state.casino);
+
           // EXP Share sonradan eklendi: eski kayıtta yok, açık başlasın.
           if (typeof state.expShare !== "boolean") state.expShare = true;
+
+          // v11 blokları: eksikse ya da bozuksa boş hâliyle takılıyor.
+          state.relics = normaliseRelicSlots(state.relics);
+          state.boons = Array.isArray(state.boons) ? state.boons : [];
+          state.box = normaliseBox(state.box);
+          state.league = deriveLeagueState(state.league);
+          state.trainers = isPlainObject(state.trainers)
+            ? (state.trainers as TrainerProgress)
+            : createTrainerProgress();
+          if (
+            state.difficulty !== "normal" &&
+            state.difficulty !== "hard" &&
+            state.difficulty !== "brutal"
+          ) {
+            state.difficulty = "normal";
+          }
+          if (typeof state.escapesUsed !== "number") state.escapesUsed = 0;
+
+          // Act asla ligin dışına taşmasın.
+          state.act = Math.max(
+            0,
+            Math.min(TOTAL_ACTS - 1, Math.floor(state.act ?? 0)),
+          );
+
+          // Altın her zaman geçerli bir tam sayı olsun.
+          const gold = sanitiseGold(state.player?.gold);
+          if (state.player !== undefined) state.player.gold = gold.gold;
         }
         useGameStore.setState({ hydrated: true });
       },
@@ -1245,27 +2350,56 @@ export function selectPokemonFor(
   return state.pokedex[member.pokemonId] ?? null;
 }
 
-/** Reliklerden türeyen savaş değiştiricileri. */
+/**
+ * Reliklerden ve rozet ödüllerinden türeyen savaş değiştiricileri.
+ *
+ * İkisi birlikte geçiyor: rozet ödülleri de aynı çarpan paketini besliyor, ve
+ * tavanların ikisini BİRLİKTE sınırlaması gerekiyor — yoksa relic tavana
+ * dayandıktan sonra rozet ödülü onu aşardı.
+ */
 export function selectBattleModifiers(state: {
-  relics: RelicId[];
+  relics: RelicSlot[];
+  boons: ClaimedBoon[];
 }): BattleModifiers {
-  return buildBattleModifiers(state.relics);
+  return buildBattleModifiers(state.relics, state.boons);
 }
 
-/** Reliklerden türeyen koşu değiştiricileri. */
-export function selectRunModifiers(state: { relics: RelicId[] }): RunModifiers {
-  return buildRunModifiers(state.relics);
+/** Reliklerden ve rozet ödüllerinden türeyen koşu değiştiricileri. */
+export function selectRunModifiers(state: {
+  relics: RelicSlot[];
+  boons: ClaimedBoon[];
+}): RunModifiers {
+  return buildRunModifiers(state.relics, state.boons);
 }
 
 /** Galibiyet serisinin altın/XP çarpanı. */
-export function selectStreakMultiplier(state: {
-  relics: RelicId[];
-  winStreak: number;
+export function selectStreakMultiplier(state: { winStreak: number }): number {
+  return getStreakMultiplier(state.winStreak, getStreakStep());
+}
+
+/**
+ * Koşunun referans seviyesi — bütün rakip seviyeleri buradan türüyor.
+ *
+ * Box'takiler SAYILMIYOR: bankta duran bir level 90 Pokémon'un yoldaki
+ * rakipleri yukarı çekmesi, Box'ı bir ceza hâline getirirdi. Referans sahadaki
+ * TAKIMI ölçüyor.
+ */
+export function selectReferenceLevel(state: {
+  player: Player;
+  act: number;
 }): number {
-  return getStreakMultiplier(
-    state.winStreak,
-    buildRunModifiers(state.relics).streakStep,
+  return getReferenceLevel(
+    state.player.team,
+    getLeagueStage(state.act).storyMinimum,
   );
+}
+
+/** Takım + Box, tek bir depo olarak. */
+export function selectStorage(state: {
+  player: Player;
+  box: TeamMember[];
+}): StorageState {
+  return toStorageState(state);
 }
 
 /**
@@ -1277,7 +2411,9 @@ export function selectStoryContext(state: {
   act: number;
   player: Player;
   pokedex: Record<number, Pokemon>;
-  relics: RelicId[];
+  relics: RelicSlot[];
+  boons: ClaimedBoon[];
+  league: LeagueState;
 }): StoryContext {
   const member = selectActiveMember(state);
   const pokemon = selectPokemonFor(state, member);
@@ -1292,7 +2428,13 @@ export function selectStoryContext(state: {
     act: state.act,
     gold: state.player.gold,
     inventory,
-    relics: state.relics,
+    // Hikâye katmanı seviyeyi de görüyor: "Seviye 2 bir relic'in varsa" diye
+    // bir gereksinim yazılabilir hâle geldi.
+    relics: state.relics.map((slot) => slot.id),
+    relicLevels: Object.fromEntries(
+      state.relics.map((slot) => [slot.id, slot.level]),
+    ),
+    badges: state.league.badges.length,
     activeTypes: (pokemon?.types ?? []) as PokemonType[],
     activeLevel: member?.level ?? 0,
   };
@@ -1315,5 +2457,30 @@ export function selectReachableNodes(state: {
     : getReachableNodes(state.map, state.currentNodeId);
 }
 
-export { MAP_ROWS, MAX_TEAM_SIZE };
-export type { GameState };
+/** Bir relic'in bu koşudaki seviyesi (0 = yok). */
+export function selectRelicLevel(
+  state: { relics: RelicSlot[] },
+  id: RelicId,
+): number {
+  return getRelicLevel(state.relics, id);
+}
+
+/** Bırakılabilecek relikler — slot takası ekranı bunu gösteriyor. */
+export function selectDroppableRelics(state: {
+  relics: RelicSlot[];
+}): RelicSlot[] {
+  return [...state.relics];
+}
+
+export {
+  BOX_CAPACITY,
+  dropRelic,
+  ELITE_FOUR_COUNT,
+  getOfferableRelics,
+  GYM_COUNT,
+  MAP_ROWS,
+  MAX_RELIC_SLOTS,
+  MAX_TEAM_SIZE,
+  TOTAL_ACTS,
+};
+export type { GameState, RelicSlot, StorageState };

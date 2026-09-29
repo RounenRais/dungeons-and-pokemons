@@ -9,9 +9,15 @@ import { GameIcon, type GameIconName } from "@/components/icons/GameIcons";
 import type { MapNodeType } from "@/lib/game/map";
 
 const NODE_ICON_NAMES: Record<MapNodeType, GameIconName> = {
+  // Vahşi karşılaşma ve trainer savaşı ayrı ikonlar taşımak ZORUNDA: ikisinin
+  // tek farkı yakalayıp yakalayamayacağın ve haritada bunu bilerek rota
+  // seçmen gerekiyor.
   BATTLE: "swords",
+  TRAINER_BATTLE: "target-dummy",
   ELITE: "skull",
   BOSS: "tower",
+  GYM: "medal",
+  LEAGUE: "star",
   SHOP: "stall",
   CHEST: "chest",
   REST: "campfire",

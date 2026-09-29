@@ -24,7 +24,9 @@ import { ShopScreen } from "@/components/shop/ShopScreen";
 import { CasinoScreen } from "@/components/casino/CasinoScreen";
 import { StoryEventRunner } from "@/components/story/StoryEventRunner";
 import { startBattle } from "@/lib/battle";
-import { getOfferableRelics, getRelic, type RelicId } from "@/lib/data/relics";
+import { getBossPhases } from "@/lib/data/bossPhases";
+import { getRelic, type RelicId } from "@/lib/data/relics";
+import { getOfferableRelics, rollRelicOffer } from "@/lib/game/relicSlots";
 import {
   getCampVisitor,
   RELIC_DEALER_STOCK,
@@ -39,16 +41,38 @@ import type { ShopItem } from "@/lib/data/shopItems";
 import {
   createBossEnemy,
   createWildEnemy,
-  type EncounterKind,
 } from "@/lib/game/enemy";
-import { getTeamAverageLevel, getTeamTopLevel } from "@/lib/game/team";
-import { applyChestBoost } from "@/lib/game/chest";
+import { getTeamTopLevel } from "@/lib/game/team";
 import {
   isRetryNode,
   NODE_DESCRIPTIONS,
   NODE_LABELS,
   type MapNode,
 } from "@/lib/game/map";
+import {
+  canChallengeChampion,
+  canEnterEliteFour,
+  ELITE_FOUR_COUNT,
+  getEliteFourEncounter,
+  getLeagueStage,
+  getStageEncounter,
+} from "@/lib/game/league";
+import {
+  createGymEncounter,
+  createLeagueEncounter,
+  createTrainerEncounter,
+  type TrainerEncounter,
+} from "@/lib/game/trainerBattle";
+import {
+  getEligibleTrainers,
+  getTrainerReward,
+  getTrainerSpecies,
+  type TrainerDefinition,
+} from "@/lib/data/trainerRoster";
+import { describeBoon, getBoonLabel } from "@/lib/data/gymBadges";
+import { BadgeReward } from "./BadgeReward";
+import { ReliefPanel } from "./ReliefPanel";
+import { BoxPanel } from "@/components/team/BoxPanel";
 import { getZone } from "@/lib/game/zones";
 import { pickOne } from "@/lib/game/rng";
 import type { StoryFollowUp } from "@/lib/story/apply";
@@ -59,22 +83,36 @@ import {
   selectBattleModifiers,
   selectPokemonFor,
   selectReachableNodes,
+  selectReferenceLevel,
   selectRunModifiers,
+  selectStorage,
   selectStoryContext,
   useGameStore,
 } from "@/lib/store/gameStore";
-import type { Pokemon, Rarity, StatKey, TeamMember } from "@/lib/types";
+import type { Pokemon, Rarity, TeamMember } from "@/lib/types";
 
-/** Stats a "train" rest can improve. */
-const TRAINABLE_STATS: StatKey[] = [
-  "attack",
-  "defense",
-  "specialAttack",
-  "specialDefense",
-  "speed",
-  "hp",
-];
-const TRAIN_AMOUNT = 8;
+/*
+ * Dinlenme durağındaki "antrenman" seçeneği KALDIRILDI.
+ *
+ * Kalıcı ham stat veren her kaynak oyundan çıktı (bkz. `docs/progression.md`)
+ * ve antrenman onlardan biriydi — hem de en sinsisi, çünkü bedava ve
+ * tekrarlanabilirdi. Dinlenme durağı artık iyileşme VE takım/Box yönetimi
+ * sunuyor; ikincisi Box sisteminin var olabilmesi için gerekli.
+ */
+/**
+ * Sahadaki üye dışında savaşabilecek kaç üye var.
+ *
+ * Savaş kurulurken gerekiyor: yedek varsa aktif Pokémon bayıldığında savaş
+ * bitmiyor, zorunlu değişim oluyor. Box'takiler SAYILMIYOR — savaş sırasında
+ * Box'a erişim yok.
+ */
+function countPlayerReserves(state: {
+  player: { team: readonly { currentHp: number }[]; activeIndex: number };
+}): number {
+  return state.player.team.filter(
+    (entry, index) => index !== state.player.activeIndex && entry.currentHp > 0,
+  ).length;
+}
 
 interface MapScreenProps {
   /** HUD'daki "?" butonu — nasıl oynanır ekranını açar. */
@@ -85,11 +123,18 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
   const map = useGameStore((state) => state.map);
   const currentNodeId = useGameStore((state) => state.currentNodeId);
   const act = useGameStore((state) => state.act);
+  const seed = useGameStore((state) => state.seed);
   const player = useGameStore((state) => state.player);
   const pokedex = useGameStore((state) => state.pokedex);
   const relics = useGameStore((state) => state.relics);
+  const boons = useGameStore((state) => state.boons);
+  const box = useGameStore((state) => state.box);
+  const league = useGameStore((state) => state.league);
   const winStreak = useGameStore((state) => state.winStreak);
-  const pendingRelics = useGameStore((state) => state.pendingRelics);
+  const relicPrompt = useGameStore((state) => state.relicPrompt);
+  const pendingBadge = useGameStore((state) => state.pendingBadge);
+  const pendingRelief = useGameStore((state) => state.pendingRelief);
+  const migration = useGameStore((state) => state.migration);
   const log = useGameStore((state) => state.log);
   const expShare = useGameStore((state) => state.expShare);
   const member = useGameStore(selectActiveMember);
@@ -116,6 +161,8 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
   const [isCasinoOpen, setIsCasinoOpen] = useState(false);
   /** "New run" onay penceresi — koşuyu kazayla silmeyi engelliyor. */
   const [isNewRunConfirmOpen, setIsNewRunConfirmOpen] = useState(false);
+  /** Takım ve Box yönetim paneli — sadece dinlenme durağından açılıyor. */
+  const [isBoxOpen, setIsBoxOpen] = useState(false);
 
   const busy =
     isLoadingBattle ||
@@ -128,47 +175,54 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     activeStoryEvent !== null ||
     isCasinoOpen ||
     isNewRunConfirmOpen ||
-    (pendingRelics !== null && pendingRelics.length > 0);
+    isBoxOpen ||
+    pendingBadge !== null ||
+    pendingRelief ||
+    migration !== null ||
+    relicPrompt !== null;
 
   if (map === null) return null;
 
-  /** Opens a battle for a battle-flavoured node. */
-  async function startNodeBattle(kind: EncounterKind, speciesId?: number) {
+  /**
+   * Vahşi bir Pokémon savaşı açar.
+   *
+   * Level artık takımın ortalamasından değil REFERANS SEVİYEDEN geliyor
+   * (en yüksek %70 + ilk üçün ortalaması %30, bkz. `lib/game/levelScaling.ts`).
+   * Ortalama, zayıf Pokémon'larla takımı doldurup zorluğu düşürmeyi bir
+   * sömürüye çeviriyordu.
+   */
+  async function startWildBattle(
+    speciesId?: number,
+    catchable = true,
+    kind: "wild" | "elite" = "wild",
+  ) {
     const store = useGameStore.getState();
     const activeMember = selectActiveMember(store);
     const activePokemon = selectPokemonFor(store, activeMember);
     if (activeMember === null || activePokemon === null) return;
 
-    // Zorluğun ölçüsü sahadaki üye değil TAKIMIN ORTALAMASI — kimi sahaya
-    // sürdüğün taktik bir karar, zorluk ayarı değil (bkz. getTeamAverageLevel).
-    const partyLevel = getTeamAverageLevel(store.player.team);
+    const referenceLevel = selectReferenceLevel(store);
+    const runMods = selectRunModifiers(store);
+    const stage = getLeagueStage(store.act);
 
     setIsLoadingBattle(true);
     try {
-      // Act sonu boss'u kadrolu: türü bölgeye, level'ı takıma göre belirlenir.
-      const enemy =
-        kind === "boss" && speciesId === undefined
-          ? await createBossEnemy(store.player.position, {
-              playerLevel: partyLevel,
-              playerBst: activePokemon.baseStatTotal,
-            })
-          : await createWildEnemy(store.player.position, {
-              kind,
-              playerLevel: partyLevel,
-              playerBst: activePokemon.baseStatTotal,
-              // Tip eşleşmesi adaleti: oyuncuya karşı duvar olan türler erken
-              // karelerde havuzdan çıkarılır (bkz. lib/game/enemy.ts).
-              playerTypes: activePokemon.types,
-              teamSize: store.player.team.length,
-              speciesId,
-            });
-      const isElite = kind !== "wild";
+      const enemy = await createWildEnemy(store.player.position, {
+        kind,
+        // Bait Pouch reliği vahşi Pokémon'ları bir tık aşağı çekiyor.
+        playerLevel: Math.max(1, referenceLevel - runMods.wildLevelReduction),
+        playerBst: activePokemon.baseStatTotal,
+        // Tip eşleşmesi adaleti: oyuncuya karşı duvar olan türler erken
+        // karelerde havuzdan çıkarılır (bkz. lib/game/enemy.ts).
+        playerTypes: activePokemon.types,
+        teamSize: store.player.team.length,
+        storyMinimum: stage.storyMinimum,
+        speciesId,
+      });
 
       store.addLog(
-        enemy.title !== null
-          ? `${enemy.pokemon.displayName}, ${enemy.title}, blocks the way! (Lv ${enemy.member.level})`
-          : `${isElite ? "A powerful" : "A wild"} ${enemy.pokemon.displayName} (Lv ${enemy.member.level}) appeared!`,
-        isElite ? "bad" : "info",
+        `${kind === "elite" ? "An elite" : "A wild"} ${enemy.pokemon.displayName} (Lv ${enemy.member.level}) appeared!`,
+        kind === "elite" ? "bad" : "info",
       );
       store.beginBattle(
         startBattle({
@@ -176,13 +230,15 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
           playerMember: activeMember,
           enemyPokemon: enemy.pokemon,
           enemyMember: enemy.member,
-          isBoss: isElite,
+          isBoss: kind === "elite",
           enemySkill: enemy.skill,
+          enemyProfile: kind === "elite" ? "balanced" : "wild",
+          isTrainerBattle: false,
+          // Bütün vahşi Pokémon'lar yakalanabilir (bkz. docs/catching.md).
+          catchable,
+          arenaSeed: enemy.pokemon.id + store.player.position,
           playerModifiers: selectBattleModifiers(store),
-          playerReserves: store.player.team.filter(
-            (entry, index) =>
-              index !== store.player.activeIndex && entry.currentHp > 0,
-          ).length,
+          playerReserves: countPlayerReserves(store),
         }),
       );
     } catch (error) {
@@ -197,17 +253,306 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     }
   }
 
+  /**
+   * Efsanevi / hikâye boss'u — tek Pokémon, fazlı.
+   *
+   * Yakalanabilirliği çağıran taraf söylüyor: Victory Road'un efsanevisi
+   * vahşi sayılıyor ve yakalanabiliyor, hikâye boss'ları sayılmıyor.
+   */
+  async function startBossBattle(catchable: boolean) {
+    const store = useGameStore.getState();
+    const activeMember = selectActiveMember(store);
+    const activePokemon = selectPokemonFor(store, activeMember);
+    if (activeMember === null || activePokemon === null) return;
+
+    const referenceLevel = selectReferenceLevel(store);
+
+    setIsLoadingBattle(true);
+    try {
+      const enemy = await createBossEnemy(store.player.position, {
+        playerLevel: referenceLevel,
+        playerBst: activePokemon.baseStatTotal,
+      });
+
+      store.addLog(
+        enemy.title !== null
+          ? `${enemy.pokemon.displayName}, ${enemy.title}, blocks the way! (Lv ${enemy.member.level})`
+          : `${enemy.pokemon.displayName} (Lv ${enemy.member.level}) blocks the way!`,
+        "bad",
+      );
+      store.beginBattle(
+        startBattle({
+          playerPokemon: activePokemon,
+          playerMember: activeMember,
+          enemyPokemon: enemy.pokemon,
+          enemyMember: enemy.member,
+          isBoss: true,
+          enemySkill: enemy.skill,
+          enemyProfile: "balanced",
+          isTrainerBattle: false,
+          /*
+           * Fazlar: tek Pokémon'luk boss'un zorluğu HP'den değil savaşın
+           * ortasında değişen sorudan geliyor (bkz. lib/data/bossPhases.ts).
+           */
+          bossPhases: getBossPhases(enemy.pokemon.speciesId),
+          catchable,
+          arenaSeed: enemy.pokemon.id + store.player.position,
+          playerModifiers: selectBattleModifiers(store),
+          playerReserves: countPlayerReserves(store),
+        }),
+      );
+    } catch (error) {
+      store.addLog(
+        error instanceof Error ? error.message : "Could not prepare the battle.",
+        "bad",
+      );
+    } finally {
+      setIsLoadingBattle(false);
+    }
+  }
+
+  /**
+   * Trainer savaşını BAŞLATIR — karşılaşma paneli kapandıktan sonra.
+   *
+   * Kadronun ilk Pokémon'u sahaya çıkıyor, kalanı `enemyTeam` olarak savaş
+   * state'ine giriyor ve biri bayıldıkça sıradaki geliyor (bkz.
+   * `lib/battle/engine.ts` icindeki `checkOutcome`).
+   */
+  function beginTrainerBattle(encounter: TrainerEncounter) {
+    const store = useGameStore.getState();
+    const activeMember = selectActiveMember(store);
+    const activePokemon = selectPokemonFor(store, activeMember);
+    if (activeMember === null || activePokemon === null) return;
+
+    store.registerTrainerSeen(encounter.sourceId);
+    store.addLog(
+      `${encounter.title} ${encounter.name} challenged you.`,
+      "bad",
+    );
+
+    store.beginBattle(
+      startBattle({
+        playerPokemon: activePokemon,
+        playerMember: activeMember,
+        enemyPokemon: encounter.lead.pokemon,
+        enemyMember: encounter.lead.member,
+        // Gym Leader, Elite Four ve Champion "boss" sayılıyor: ödül ölçekleri
+        // ve Gym Token reliği buna bakıyor.
+        isBoss: encounter.kind !== "trainer",
+        enemySkill: encounter.skill,
+        enemyProfile: encounter.aiProfile,
+        enemyTeam: encounter.reserves,
+        isTrainerBattle: true,
+        trainer: {
+          sourceId: encounter.sourceId,
+          name: encounter.name,
+          title: encounter.title,
+          spriteId: encounter.spriteId,
+          teamSize: encounter.teamSize,
+          dialogue: encounter.dialogue,
+        },
+        // Trainer'ın Pokémon'u hiçbir koşulda yakalanamaz.
+        catchable: false,
+        playerModifiers: selectBattleModifiers(store),
+        playerReserves: countPlayerReserves(store),
+        arenaSeed: encounter.lead.pokemon.id + store.player.position,
+      }),
+    );
+  }
+
+  /** Sıradan ya da elit bir trainer karşılaşması hazırlar. */
+  async function prepareTrainer(tier: "normal" | "elite") {
+    const store = useGameStore.getState();
+    const activeMember = selectActiveMember(store);
+    if (activeMember === null) return;
+
+    const candidates = getEligibleTrainers({
+      act: store.act,
+      tier,
+      defeatedIds: store.trainers.defeated,
+      seenIds: store.trainers.seen,
+    });
+
+    // Havuz tükendiyse (uzun bir koşuda hepsi görüldü) vahşi karşılaşmaya
+    // düşülüyor: boş bir düğüm üretmekten iyidir.
+    if (candidates.length === 0) {
+      await startWildBattle();
+      return;
+    }
+
+    const trainer: TrainerDefinition = pickOne(Math.random, candidates);
+    const referenceLevel = selectReferenceLevel(store);
+
+    setIsLoadingBattle(true);
+    try {
+      const encounter = await createTrainerEncounter({
+        trainer,
+        species: getTrainerSpecies(trainer, store.seed, store.act),
+        referenceLevel,
+        act: store.act,
+        goldReward: getTrainerReward(trainer, store.act),
+      });
+      beginTrainerBattle(encounter);
+    } catch (error) {
+      store.addLog(
+        error instanceof Error ? error.message : "Could not find a trainer.",
+        "bad",
+      );
+    } finally {
+      setIsLoadingBattle(false);
+    }
+  }
+
+  /** Act'in Gym Leader'i. */
+  async function prepareGym() {
+    const store = useGameStore.getState();
+    const stageEncounter = getStageEncounter(store.seed, store.act);
+    if (stageEncounter === null || stageEncounter.kind !== "gym") return;
+
+    const referenceLevel = selectReferenceLevel(store);
+
+    setIsLoadingBattle(true);
+    try {
+      const encounter = await createGymEncounter({
+        leader: stageEncounter.leader,
+        species: stageEncounter.species,
+        referenceLevel,
+        act: store.act,
+      });
+      beginTrainerBattle(encounter);
+    } catch (error) {
+      store.addLog(
+        error instanceof Error
+          ? error.message
+          : "Could not reach the Gym Leader.",
+        "bad",
+      );
+    } finally {
+      setIsLoadingBattle(false);
+    }
+  }
+
+  /**
+   * Lig düğümü: Elite Four turu ya da Champion.
+   *
+   * Hangisi olduğuna act karar veriyor. Elite Four turunda ilk savaşa
+   * girmeden takım tam iyileşiyor; Champion'a çıkmak için dört üyenin
+   * yenilmiş olması gerekiyor.
+   */
+  async function prepareLeague() {
+    const store = useGameStore.getState();
+    const stage = getLeagueStage(store.act);
+    const referenceLevel = selectReferenceLevel(store);
+
+    if (stage.kind === "champion") {
+      if (!canChallengeChampion(store.league)) {
+        store.addLog(
+          "The Champion will not see you until the Elite Four are beaten.",
+          "info",
+        );
+        return;
+      }
+      const stageEncounter = getStageEncounter(store.seed, store.act);
+      if (stageEncounter === null || stageEncounter.kind !== "champion") return;
+
+      setIsLoadingBattle(true);
+      try {
+        const encounter = await createLeagueEncounter({
+          trainer: stageEncounter.trainer,
+          species: stageEncounter.species,
+          referenceLevel,
+          act: store.act,
+          kind: "champion",
+        });
+        beginTrainerBattle(encounter);
+      } catch (error) {
+        store.addLog(
+          error instanceof Error
+            ? error.message
+            : "Could not reach the Champion.",
+          "bad",
+        );
+      } finally {
+        setIsLoadingBattle(false);
+      }
+      return;
+    }
+
+    // --- Elite Four turu ---
+    if (!canEnterEliteFour(store.league)) {
+      store.addLog(
+        `The League needs all eight badges. You have ${store.league.badges.length}.`,
+        "info",
+      );
+      return;
+    }
+
+    const index = store.league.eliteFourDefeated.length;
+    if (index >= ELITE_FOUR_COUNT) {
+      store.addLog("The Elite Four are beaten. The Champion waits.", "good");
+      return;
+    }
+
+    // Tura ILK girişte takım tam iyileşiyor; üyeler arasında iyileşme yok.
+    if (!store.league.eliteFourStarted) {
+      store.beginEliteFour();
+      store.addLog(
+        "The League healed your team. From here you are on your own.",
+        "good",
+      );
+    }
+
+    const member = getEliteFourEncounter(store.seed, index);
+    setIsLoadingBattle(true);
+    try {
+      const encounter = await createLeagueEncounter({
+        trainer: member.trainer,
+        species: member.species,
+        referenceLevel,
+        act: store.act,
+        kind: "elite-four",
+      });
+      beginTrainerBattle(encounter);
+    } catch (error) {
+      store.addLog(
+        error instanceof Error
+          ? error.message
+          : "Could not reach the Elite Four.",
+        "bad",
+      );
+    } finally {
+      setIsLoadingBattle(false);
+    }
+  }
+
   /** Runs whatever sits on the node the player just stepped onto. */
   async function resolveNode(node: MapNode) {
     switch (node.type) {
       case "BATTLE":
-        await startNodeBattle("wild");
+        // Vahşi karşılaşma: yakalanabilir.
+        await startWildBattle();
+        return;
+      case "TRAINER_BATTLE":
+        await prepareTrainer("normal");
         return;
       case "ELITE":
-        await startNodeBattle("elite");
+        await startWildBattle(undefined, true, "elite");
+        return;
+      case "GYM":
+        await prepareGym();
+        return;
+      case "LEAGUE":
+        await prepareLeague();
         return;
       case "BOSS":
-        await startNodeBattle("boss");
+        /*
+         * Efsanevi boss.
+         *
+         * `catchable: true` — Victory Road'un efsanevisi VAHŞİ sayılıyor, yani
+         * yakalanabilir. İhtimal çok düşük (capture rate 3) ama sıfır değil ve
+         * bu bir gereksinim: tür yüzünden yakalanamaz diye bir kural yok.
+         */
+        await startBossBattle(true);
         return;
       case "CHEST":
         setChestTier(rollChestTier());
@@ -304,7 +649,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
             : "legendary";
 
     // Magnet relic can bump a case one tier.
-    const upgrade = selectRunModifiers({ relics }).chestUpgradeChance;
+    const upgrade = selectRunModifiers({ relics, boons }).chestUpgradeChance;
     if (upgrade > 0 && Math.random() < upgrade) {
       const order: Rarity[] = ["common", "rare", "epic", "legendary"];
       const next = order[Math.min(order.length - 1, order.indexOf(base) + 1)];
@@ -345,6 +690,10 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
 
   function handleRestHeal() {
     const store = useGameStore.getState();
+    // Walking Stick reliği dinlenme iyileşmesine ekliyor.
+    const bonus = selectRunModifiers(store).restHealBonus;
+    const percent = REST_HEAL_PERCENT + bonus;
+
     store.replaceTeam(
       store.player.team.map((entry) => ({
         ...entry,
@@ -352,8 +701,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
           entry.currentHp > 0
             ? Math.min(
                 entry.maxHp,
-                entry.currentHp +
-                  Math.ceil((entry.maxHp * REST_HEAL_PERCENT) / 100),
+                entry.currentHp + Math.ceil((entry.maxHp * percent) / 100),
               )
             : entry.currentHp,
         status: "none" as const,
@@ -363,23 +711,6 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
       store.player.activeIndex,
     );
     store.addLog("Your team rested and recovered.", "good");
-    setIsRestOpen(false);
-  }
-
-  function handleRestTrain() {
-    const store = useGameStore.getState();
-    const activeMember = selectActiveMember(store);
-    const activePokemon = selectPokemonFor(store, activeMember);
-    if (activeMember === null || activePokemon === null) {
-      setIsRestOpen(false);
-      return;
-    }
-
-    const stat = pickOne(Math.random, TRAINABLE_STATS);
-    store.updateActiveMember(
-      applyChestBoost(activeMember, activePokemon, stat, TRAIN_AMOUNT),
-    );
-    store.addLog(`Training paid off: ${stat} +${TRAIN_AMOUNT}.`, "good");
     setIsRestOpen(false);
   }
 
@@ -438,7 +769,14 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     store.addLog(outcome.text, "info");
     setActiveEvent(null);
 
-    if (outcome.fight === true) void startNodeBattle("elite", shownSpecies);
+    /*
+     * Olayın başlattığı dövüş.
+     *
+     * Tür kartta gösterilen Pokémon (`shownSpecies`); yakalanabilir, çünkü
+     * bu bir trainer savaşı değil — kartta bir Pokémon var ve oyuncunun ona
+     * top atmasını engelleyen bir sebep yok.
+     */
+    if (outcome.fight === true) void startWildBattle(shownSpecies, true);
   }
 
   /** Hikâye olayı bitti: sonucu store'a zaten yazıldı, kalan ekran işleri burada. */
@@ -446,7 +784,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     setActiveStoryEvent(null);
     if (followUp.chest !== undefined) setChestTier(followUp.chest);
     if (followUp.fight !== undefined) {
-      void startNodeBattle("elite", followUp.fight.speciesId);
+      void startWildBattle(followUp.fight.speciesId, true);
     }
   }
 
@@ -516,6 +854,24 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
       ? getCampVisitor(currentNode.id)
       : "none";
   const nextNodes = reachable.map((id) => map.nodes[id]).filter(Boolean);
+
+  /**
+   * Bu act'in Gym Leader'ının adı.
+   *
+   * Rozet ödülü paneli bunu başlıkta kullanıyor. Kadro seed'e bağlı olduğu
+   * için act'ten türetiliyor — ayrı bir state tutmaya gerek yok.
+   */
+  const stageEncounter = getStageEncounter(seed, act);
+  const lastGymName =
+    stageEncounter !== null && stageEncounter.kind === "gym"
+      ? stageEncounter.leader.name
+      : "The Gym Leader";
+
+  /** Elite Four turunda sıradaki üyenin adı — soluklanma panelinde geçiyor. */
+  const nextEliteFourName =
+    league.eliteFourDefeated.length < ELITE_FOUR_COUNT
+      ? getEliteFourEncounter(seed, league.eliteFourDefeated.length).trainer.name
+      : null;
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 py-5">
@@ -610,16 +966,115 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
         </div>
       )}
 
-      {pendingRelics !== null && pendingRelics.length > 0 && (
+      {/*
+        Relik ekranı üç farklı soru soruyor: teklif, tavandaki relic'in
+        telafisi, ve slotlar doluyken takas. Üçü de aynı bileşen.
+      */}
+      {relicPrompt !== null && (
         <RelicChoice
-          options={pendingRelics}
+          prompt={relicPrompt}
           owned={relics}
           onPick={(id) => {
             const store = useGameStore.getState();
+            const before = store.relics.find((slot) => slot.id === id)?.level ?? 0;
             store.addRelic(id);
-            store.addLog(`You gained a relic: ${getRelic(id).label}`, "good");
+            const after =
+              useGameStore.getState().relics.find((slot) => slot.id === id)
+                ?.level ?? 0;
+
+            // Seviye atladıysa bunu söyle: kopyanın boşa gitmediği görünsün.
+            if (after > before && before > 0) {
+              store.addLog(
+                `${getRelic(id).label} levelled up to ${after}.`,
+                "good",
+              );
+            } else if (after > 0) {
+              store.addLog(`You gained a relic: ${getRelic(id).label}`, "good");
+            }
+          }}
+          onCompensate={(choice) => {
+            const store = useGameStore.getState();
+            if (relicPrompt.kind !== "maxed") return;
+
+            if (choice === "coins") {
+              store.cashInRelic(relicPrompt.id);
+              store.addLog(
+                `${getRelic(relicPrompt.id).label} was already maxed — you took coins instead.`,
+                "good",
+              );
+              return;
+            }
+
+            // Reroll ve alternatif aynı işi yapıyor: yeni bir teklif açıyor.
+            // Fark havuzda: alternatif, tavandaki relic'i havuzdan çıkarıyor.
+            const pool = getOfferableRelics(store.relics).filter((id) =>
+              choice === "alternative" ? id !== relicPrompt.id : true,
+            );
+            const options = rollRelicOffer(store.relics, 3, Math.random, pool);
+            if (options.length === 0) {
+              store.clearRelicOffer();
+              store.addLog("Nothing left in the pool to offer.", "info");
+              return;
+            }
+            useGameStore.setState({
+              relicPrompt: { kind: "offer", options },
+            });
+          }}
+          onSwap={(dropId) => {
+            const store = useGameStore.getState();
+            if (relicPrompt.kind !== "slots-full") return;
+            store.swapRelic(dropId, relicPrompt.id);
+            store.addLog(
+              `You left ${getRelic(dropId).label} behind and took ${getRelic(relicPrompt.id).label}.`,
+              "good",
+            );
           }}
           onSkip={() => useGameStore.getState().clearRelicOffer()}
+        />
+      )}
+
+      {/* Rozet ödülü: Gym Leader yenildikten sonra açılıyor. */}
+      {pendingBadge !== null && (
+        <BadgeReward
+          badge={pendingBadge}
+          leaderName={lastGymName}
+          claimed={boons}
+          onClaim={(boon) => {
+            const store = useGameStore.getState();
+            store.claimBoon(boon);
+            store.addLog(
+              `${pendingBadge.label}: ${getBoonLabel(boon)} — ${describeBoon(boon)}`,
+              "good",
+            );
+          }}
+        />
+      )}
+
+      {/*
+        Elite Four üyeleri arasındaki soluklanma.
+
+        Otomatik tam iyileşme YOK: oyuncu kısmi iyileşme, çanta ya da riskli
+        devam arasında seçim yapıyor (bkz. lib/game/league.ts).
+      */}
+      {pendingRelief && (
+        <ReliefPanel
+          defeated={league.eliteFourDefeated.length}
+          total={ELITE_FOUR_COUNT}
+          nextName={nextEliteFourName}
+          team={player.team}
+          onChoose={(id) => {
+            const store = useGameStore.getState();
+            store.applyRelief(id);
+            if (id === "bag") setIsBoxOpen(true);
+            store.addLog(
+              id === "breather"
+                ? "You caught your breath before the next door."
+                : id === "bag"
+                  ? "You opened your bag between battles."
+                  : "You walked straight in. The League paid for the show.",
+              "info",
+            );
+          }}
         />
       )}
 
@@ -628,15 +1083,35 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
           canHeal={player.team.some((entry) => entry.currentHp < entry.maxHp)}
           visitor={campVisitor}
           onHeal={handleRestHeal}
-          onTrain={handleRestTrain}
+          onManageParty={() => {
+            setIsRestOpen(false);
+            setIsBoxOpen(true);
+          }}
           onVisit={handleCampVisit}
+        />
+      )}
+
+      {/*
+        Takım ve Box yönetimi. Dinlenme durağından ve Elite Four'un "çantayı
+        aç" seçeneğinden açılıyor — savaş sırasında ASLA.
+      */}
+      {isBoxOpen && (
+        <BoxPanel
+          storage={selectStorage({ player, box })}
+          pokedex={pokedex}
+          onSendToBox={(id) => useGameStore.getState().sendMemberToBox(id)}
+          onWithdraw={(id) =>
+            useGameStore.getState().withdrawMemberFromBox(id)
+          }
+          onRelease={(id) => useGameStore.getState().releaseMember(id)}
+          onSetActive={(index) => useGameStore.getState().setActiveIndex(index)}
+          onClose={() => setIsBoxOpen(false)}
         />
       )}
 
       {isCasinoOpen && (
         <CasinoScreen onLeave={() => setIsCasinoOpen(false)} />
       )}
-
       {activeStoryEvent !== null && (
         <StoryEventRunner
           event={activeStoryEvent}
@@ -665,7 +1140,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
       {isShopOpen && member !== null && pokemon !== null && (
         <ShopScreen
           gold={player.gold}
-          discount={selectRunModifiers({ relics }).shopDiscount}
+          discount={selectRunModifiers({ relics, boons }).shopDiscount}
           member={member}
           pokemon={pokemon}
           playerLevel={getTeamTopLevel(player.team)}

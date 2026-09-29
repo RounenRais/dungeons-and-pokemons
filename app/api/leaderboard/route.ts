@@ -1,4 +1,4 @@
-// Global skor tablosunun sunucu tarafı.
+// Herkese açık skor tablosunun sunucu tarafı.
 //
 // ---------------------------------------------------------------------------
 // NEDEN BİR API ROUTE
@@ -7,153 +7,104 @@
 // bilerek böyle. Ama "tüm oyuncuların tablosu" tanımı gereği paylaşılan bir
 // yer istiyor: cihazın localStorage'ı başka kimseye görünmüyor.
 //
-// Buradaki route Supabase'in REST arayüzüne gidiyor — SDK EKLENMEDİ, sadece
-// `fetch`. Tek bir tablo için bir bağımlılık taşımaya değmez, ve service key
-// hiçbir zaman tarayıcıya inmiyor: sadece bu dosya okuyor.
+// Depo seçimi ve kurulumu `lib/server/leaderboardStore.ts` içinde; şema
+// `db/migrations/0001_leaderboard.sql`; puanlama `lib/game/score.ts`;
+// anti-cheat'in sınırları `docs/leaderboard.md`.
 //
 // ---------------------------------------------------------------------------
-// KURULUM
+// GELEN SKORA GÜVENİLMİYOR
 // ---------------------------------------------------------------------------
-// `.env.local` içine:
-//
-//   SUPABASE_URL=https://<proje>.supabase.co
-//   SUPABASE_SERVICE_ROLE_KEY=<service_role anahtarı>
-//
-// Supabase SQL editöründe bir kez:
-//
-//   create table public.leaderboard (
-//     id           text primary key,
-//     name         text not null,
-//     depth        integer not null,
-//     best_level   integer not null,
-//     bosses       integer not null,
-//     finished_at  bigint  not null,
-//     created_at   timestamptz not null default now()
-//   );
-//   create index leaderboard_rank_idx
-//     on public.leaderboard (depth desc, best_level desc, bosses desc, finished_at asc);
-//   alter table public.leaderboard enable row level security;
-//
-// RLS açık ve HİÇ policy yok: yani anon anahtarla kimse okuyup yazamıyor,
-// sadece service_role kullanan bu route erişiyor. Doğrulama da burada.
-//
-// Anahtarlar yoksa route 503 + `configured: false` dönüyor ve istemci sessizce
-// cihazdaki yerel tabloya düşüyor — yani oyun anahtarsız da çalışıyor.
+// İstemci puan GÖNDERMİYOR — koşunun özetini gönderiyor (level, rozet, Elite
+// Four, şampiyonluk, trainer galibiyeti, zorluk) ve puan burada yeniden
+// hesaplanıyor. Özetin kendisi de iç tutarlılık kontrolünden geçiyor:
+// rozetsiz Elite Four, Elite Four'suz şampiyonluk ya da level 7'de sekiz
+// rozet gibi imkânsız koşular reddediliyor.
 
 import {
-  compareEntries,
-  createRunId,
-  isValidName,
+  LEADERBOARD_MAX_LIMIT,
   LEADERBOARD_PAGE_SIZE,
-  normaliseName,
-  normaliseSubmission,
-  parseEntries,
-  type LeaderboardEntry,
+  normaliseRunSummary,
+  toEntry,
+  validateName,
+  validateRunSummary,
+  validateUntrustedRunSummary,
 } from "@/lib/game/leaderboardSchema";
+import {
+  getLeaderboardStore,
+  isProduction,
+} from "@/lib/server/leaderboardStore";
+import {
+  checkRateLimit,
+  getClientKey,
+  SUBMIT_LIMIT,
+} from "@/lib/server/rateLimit";
+import { TICKET_MESSAGES, verifyRunTicket } from "@/lib/server/runTicket";
 
 /** Tablo her istekte tazeden okunuyor; statik üretime kapalı. */
 export const dynamic = "force-dynamic";
 
-const TABLE = "leaderboard";
-
-/** Supabase satırının alan adları snake_case; istemci camelCase bekliyor. */
-interface LeaderboardRow {
-  id: string;
-  name: string;
-  depth: number;
-  best_level: number;
-  bosses: number;
-  finished_at: number;
-}
-
-function rowToEntry(row: LeaderboardRow): LeaderboardEntry {
-  return {
-    id: row.id,
-    name: row.name,
-    depth: row.depth,
-    bestLevel: row.best_level,
-    bossesDefeated: row.bosses,
-    finishedAt: row.finished_at,
-  };
-}
-
-interface SupabaseConfig {
-  url: string;
-  key: string;
-}
-
-/** Anahtarlar tanımlı mı? Değilse global tablo kapalı demektir. */
-function readConfig(): SupabaseConfig | null {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (
-    typeof url !== "string" ||
-    url.length === 0 ||
-    typeof key !== "string" ||
-    key.length === 0
-  ) {
-    return null;
-  }
-  return { url: url.replace(/\/+$/, ""), key };
-}
+/** Gövde için üst sınır — büyük bir JSON'la sunucuyu meşgul etmeyi kapatıyor. */
+const MAX_BODY_BYTES = 4096;
 
 function notConfigured(): Response {
   return Response.json(
     {
       configured: false,
       entries: [],
-      message: "The global leaderboard is not set up on this deployment.",
+      total: 0,
+      storage: "none",
+      // Bu mesaj arayüzde birebir gösteriliyor: oyuncu neden tablo olmadığını
+      // bilmeli, ve cihazındaki liste ASLA "herkese açık" diye sunulmamalı.
+      message: isProduction()
+        ? "The public leaderboard is not configured on this deployment."
+        : "No database configured.",
     },
     { status: 503 },
   );
 }
 
-async function supabaseFetch(
-  config: SupabaseConfig,
-  path: string,
-  init: RequestInit = {},
-): Promise<Response> {
-  return fetch(`${config.url}/rest/v1/${path}`, {
-    ...init,
-    headers: {
-      apikey: config.key,
-      Authorization: `Bearer ${config.key}`,
-      "Content-Type": "application/json",
-      ...init.headers,
-    },
-    cache: "no-store",
-  });
+function clampInt(raw: string | null, fallback: number, max: number): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(max, Math.floor(value)));
 }
 
-/** En iyi koşuları sıralı biçimde okur. */
-async function readTop(config: SupabaseConfig): Promise<LeaderboardEntry[]> {
-  const query = [
-    "select=id,name,depth,best_level,bosses,finished_at",
-    "order=depth.desc,best_level.desc,bosses.desc,finished_at.asc",
-    `limit=${LEADERBOARD_PAGE_SIZE}`,
-  ].join("&");
+export async function GET(request: Request): Promise<Response> {
+  const store = await getLeaderboardStore();
+  if (store === null) return notConfigured();
 
-  const response = await supabaseFetch(config, `${TABLE}?${query}`);
-  if (!response.ok) {
-    throw new Error(`Supabase read failed (${response.status})`);
-  }
-
-  const rows = (await response.json()) as LeaderboardRow[];
-  return parseEntries(rows.map(rowToEntry)).slice(0, LEADERBOARD_PAGE_SIZE);
-}
-
-export async function GET(): Promise<Response> {
-  const config = readConfig();
-  if (config === null) return notConfigured();
+  const url = new URL(request.url);
+  const limit = Math.max(
+    1,
+    clampInt(
+      url.searchParams.get("limit"),
+      LEADERBOARD_PAGE_SIZE,
+      LEADERBOARD_MAX_LIMIT,
+    ),
+  );
+  // Sayfalama: `offset` ile "daha fazla göster" ikinci yüz satırı çekiyor.
+  const offset = clampInt(url.searchParams.get("offset"), 0, 100_000);
 
   try {
-    return Response.json({ configured: true, entries: await readTop(config) });
+    const page = await store.readPage(limit, offset);
+    return Response.json({
+      configured: true,
+      storage: store.kind,
+      entries: page.entries,
+      total: page.total,
+      limit,
+      offset,
+      hasMore: offset + page.entries.length < page.total,
+    });
   } catch (error) {
-    // Tablo okunamıyorsa oyunu kilitlemiyoruz: istemci yerel aynaya düşüyor.
+    // Tablo okunamıyorsa oyunu kilitlemiyoruz: istemci yerel aynaya düşüyor
+    // ve arayüz bunu "this device" diye yazıyor.
     return Response.json(
       {
         configured: true,
+        storage: store.kind,
         entries: [],
+        total: 0,
         message:
           error instanceof Error ? error.message : "Could not read the table.",
       },
@@ -163,12 +114,35 @@ export async function GET(): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const config = readConfig();
-  if (config === null) return notConfigured();
+  const store = await getLeaderboardStore();
+  if (store === null) return notConfigured();
+
+  // --- Hız sınırı ---------------------------------------------------------
+  const limit = checkRateLimit(`submit:${getClientKey(request)}`, SUBMIT_LIMIT);
+  if (!limit.ok) {
+    return Response.json(
+      {
+        error: "Too many runs submitted. Try again later.",
+        retryAfterMs: limit.retryAfterMs,
+      },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(Math.ceil(limit.retryAfterMs / 1000)),
+        },
+      },
+    );
+  }
+
+  // --- Gövde --------------------------------------------------------------
+  const raw = await request.text();
+  if (raw.length > MAX_BODY_BYTES) {
+    return Response.json({ error: "Payload too large." }, { status: 413 });
+  }
 
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(raw);
   } catch {
     return Response.json({ error: "Malformed body." }, { status: 400 });
   }
@@ -177,49 +151,73 @@ export async function POST(request: Request): Promise<Response> {
     typeof body === "object" && body !== null ? body : {}
   ) as Record<string, unknown>;
 
-  // Ad doğrulaması istemcide de var; burada tekrar ediliyor çünkü bu route
-  // doğrudan çağrılabilir ve tabloyu bozan tek şey ad olabilir.
-  const name = typeof payload.name === "string" ? normaliseName(payload.name) : "";
-  if (!isValidName(name)) {
-    return Response.json({ error: "Invalid name." }, { status: 400 });
+  // --- Ad -----------------------------------------------------------------
+  // İstemcide de doğrulanıyor; burada tekrar ediliyor çünkü bu route doğrudan
+  // çağrılabilir ve ad tablonun herkese görünen tek serbest metni.
+  const nameCheck = validateName(payload.name);
+  if (!nameCheck.ok) {
+    return Response.json(
+      { error: nameCheck.message, field: "name" },
+      { status: 400 },
+    );
   }
 
-  const run = normaliseSubmission(payload.run ?? payload);
-  const entry: LeaderboardEntry = {
-    id: createRunId(),
-    name,
-    ...run,
-    finishedAt: Date.now(),
-  };
+  // --- Bilet --------------------------------------------------------------
+  const ticket = verifyRunTicket(payload.ticket);
+  if (!ticket.ok || ticket.runId === null) {
+    return Response.json(
+      {
+        error: TICKET_MESSAGES[ticket.reason ?? "missing"],
+        field: "ticket",
+      },
+      { status: 403 },
+    );
+  }
+
+  // --- Koşu özeti ---------------------------------------------------------
+  const rawSummary = payload.run ?? payload;
+  const summary = normaliseRunSummary(rawSummary);
+  const problems = [
+    ...validateUntrustedRunSummary(rawSummary),
+    ...validateRunSummary(summary),
+  ];
+  if (problems.length > 0) {
+    return Response.json(
+      {
+        error: "This run summary is not possible.",
+        problems,
+      },
+      { status: 422 },
+    );
+  }
+
+  // Puan burada hesaplanıyor; istemcinin gönderdiği bir `score` alanı varsa
+  // hiç okunmuyor.
+  const entry = toEntry(ticket.runId, nameCheck.name, summary);
 
   try {
-    const response = await supabaseFetch(config, TABLE, {
-      method: "POST",
-      headers: { Prefer: "return=minimal" },
-      body: JSON.stringify({
-        id: entry.id,
-        name: entry.name,
-        depth: entry.depth,
-        best_level: entry.bestLevel,
-        bosses: entry.bossesDefeated,
-        finished_at: entry.finishedAt,
-      }),
+    const write = await store.write(entry);
+    const page = await store.readPage(LEADERBOARD_PAGE_SIZE, 0);
+
+    return Response.json({
+      configured: true,
+      storage: store.kind,
+      entry,
+      // Aynı bilet ikinci kez gönderildiyse satır yazılmadı; istemci bunu
+      // "zaten kaydedilmiş" diye gösteriyor, hata olarak değil.
+      duplicate: !write.inserted,
+      entries: page.entries,
+      total: page.total,
+      hasMore: page.entries.length < page.total,
     });
-
-    if (!response.ok) {
-      throw new Error(`Supabase write failed (${response.status})`);
-    }
-
-    // Yazdıktan sonra güncel tabloyu döndürüyoruz: istemci ikinci bir istek
-    // atmadan hem kendi satırını hem sıralamasını görebiliyor.
-    const entries = await readTop(config);
-    return Response.json({ configured: true, entry, entries });
   } catch (error) {
     return Response.json(
       {
         configured: true,
+        storage: store.kind,
         entry,
-        entries: [entry].sort(compareEntries),
+        entries: [],
+        total: 0,
         message:
           error instanceof Error ? error.message : "Could not write the run.",
       },

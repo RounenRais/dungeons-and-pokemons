@@ -8,6 +8,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { TYPE_COLORS } from "@/lib/data/typeChart";
 import { getXpToNextLevel } from "@/lib/game/leveling";
+import type { CatchThrow } from "@/lib/game/catching";
+import { getItemLabel } from "@/lib/data/items";
 import { STAT_REWARD_LABELS } from "@/lib/game/rewards";
 import {
   resolveVictory,
@@ -16,6 +18,7 @@ import {
 } from "@/lib/game/progression";
 import { CatchPanel } from "./CatchPanel";
 import type { InventoryEntry } from "@/lib/types";
+import type { CaptureResolutionState } from "@/lib/battle";
 import type { RunModifiers } from "@/lib/game/modifiers";
 import { getMemberName } from "@/lib/game/team";
 import { MoveLearnPanel } from "@/components/MoveLearnPanel";
@@ -40,6 +43,15 @@ export interface VictoryResult {
   /** Set when a ball actually held — the new team member. */
   capturedMember: TeamMember | null;
   capturedPokemon: Pokemon | null;
+  /**
+   * Yakalanan Pokémon nereye gitti.
+   *
+   * Store karar veriyor (takım doluysa Box), ekran sadece taşıyor. `null`
+   * yakalama olmadı demek.
+   */
+  capturedDestination: "team" | "box" | "full" | null;
+  /** Savaş sonu ödülü bir eşyaysa: kimliği ve adedi. */
+  rewardItem: { itemId: string; quantity: number } | null;
   logs: string[];
 }
 
@@ -50,9 +62,18 @@ interface VictorySequenceProps {
   enemyLevel: number;
   isBoss: boolean;
   tileIndex: number;
-  /** Boss yakalama takım doluysa gerçekleşmez. */
+  /** Takım büyüklüğü — yakalanan Pokémon'un nereye gideceğini etkiliyor. */
   teamSize: number;
   enemyMember: TeamMember;
+  /**
+   * Hedef yakalanabilir mi? Savaş state'inin `catchable` alanı.
+   *
+   * Trainer savaşlarında false ve bu yüzden yakalama ADIMI HİÇ oluşmuyor —
+   * düğme gizlenmiyor, adım kurulmuyor.
+   */
+  catchable: boolean;
+  /** Rakibin savaş sonundaki HP'si ve durumu — yakalama ihtimalinin girdisi. */
+  captureResolution?: CaptureResolutionState;
   /** Reliklerden gelen koşu değiştiricileri. */
   runModifiers: RunModifiers;
   /** Galibiyet serisi çarpanı. */
@@ -63,7 +84,14 @@ interface VictorySequenceProps {
   party: PartyMemberInput[];
   /** Bag contents — Poké Balls are read from here. */
   inventory: InventoryEntry[];
-  onConsumeBall: (ballId: string) => void;
+  /**
+   * Top atıldı: sonuç ANİMASYONDAN ÖNCE burada bildiriliyor.
+   *
+   * Çağıran taraf topu düşüyor ve sonucu kayda yazıyor; yakalandıysa Pokémon'u
+   * takıma/Box'a yerleştirip nereye gittiğini döndürüyor.
+   */
+  onThrow: (result: CatchThrow) => "team" | "box" | "full" | null;
+  onLeaveCapture: () => void;
   onDone: (result: VictoryResult) => void;
 }
 
@@ -93,8 +121,20 @@ export function VictorySequence(props: VictorySequenceProps) {
   const [logs, setLogs] = useState<string[]>([]);
   // A ref, not state: `finish` reads this synchronously in the same handler
   // that sets it, so a state update would still hold the previous value.
-  const caughtRef = useRef(false);
+  const caughtRef = useRef(
+    props.captureResolution?.phase === "capture-success",
+  );
+  /**
+   * Yakalanan Pokémon nereye gitti.
+   *
+   * Store karar veriyor (takım doluysa Box) ve sonucu geri döndürüyor; ekran
+   * bunu hem yakalama panelinde hem günlükte gösteriyor.
+   */
+  const [destination, setDestination] = useState<
+    "team" | "box" | "full" | null
+  >(props.captureResolution?.storageDestination ?? null);
   const started = useRef(false);
+  const finished = useRef(false);
 
   useEffect(() => {
     if (started.current) return;
@@ -109,6 +149,8 @@ export function VictorySequence(props: VictorySequenceProps) {
       tileIndex: props.tileIndex,
       enemyMember: props.enemyMember,
       teamSize: props.teamSize,
+      catchable: props.catchable,
+      captureResolution: props.captureResolution,
       runModifiers: props.runModifiers,
       streakMultiplier: props.streakMultiplier,
       expShare: props.expShare,
@@ -162,6 +204,8 @@ export function VictorySequence(props: VictorySequenceProps) {
   }, []);
 
   function finish(finalMember: TeamMember, extraLogs: string[] = []) {
+    if (finished.current) return;
+    finished.current = true;
     props.onDone({
       member: finalMember,
       goldDelta: outcome?.goldDelta ?? 0,
@@ -177,6 +221,12 @@ export function VictorySequence(props: VictorySequenceProps) {
       capturedPokemon: caughtRef.current
         ? (outcome?.catchTarget?.pokemon ?? null)
         : null,
+      capturedDestination: caughtRef.current ? destination : null,
+      // Ödül bir eşyaysa store'un çantaya eklemesi gerekiyor.
+      rewardItem:
+        outcome?.reward.kind === "item"
+          ? { itemId: outcome.reward.itemId, quantity: outcome.reward.quantity }
+          : null,
       logs: [...logs, ...extraLogs],
     });
   }
@@ -247,14 +297,31 @@ export function VictorySequence(props: VictorySequenceProps) {
               target={outcome.catchTarget}
               inventory={props.inventory}
               bonus={props.runModifiers.captureBonus}
-              onConsumeBall={props.onConsumeBall}
+              resolution={props.captureResolution}
+              destination={destination}
+              onThrow={(result) => {
+                // Sonuç zaten çözülmüş; burada sadece kayda geçiyor ve
+                // yakalandıysa nereye gittiği öğreniliyor.
+                const where = props.onThrow(result);
+                if (result.caught) {
+                  caughtRef.current = true;
+                  setDestination(where);
+                }
+                return where;
+              }}
+              onLeave={props.onLeaveCapture}
               onFinish={(didCatch) => {
                 caughtRef.current = didCatch;
+                const name = outcome.catchTarget?.pokemon.displayName ?? "It";
                 advance(
                   member,
-                  didCatch && outcome.catchTarget !== null
+                  didCatch
                     ? [
-                        `${outcome.catchTarget.pokemon.displayName} was caught and joined your team!`,
+                        destination === "box"
+                          ? `${name} was caught and sent to your Box.`
+                          : destination === "full"
+                            ? `${name} was caught, but your party and Box are full.`
+                            : `${name} was caught and joined your party!`,
                       ]
                     : [],
                 );
@@ -470,8 +537,8 @@ function RewardStep({
           name={
             reward.kind === "gold"
               ? "coins"
-              : reward.kind === "boost"
-                ? "muscle"
+              : reward.kind === "item"
+                ? "potion"
                 : "spell-book"
           }
           className="h-7 w-7"
@@ -485,9 +552,9 @@ function RewardStep({
         </p>
       )}
 
-      {reward.kind === "boost" && (
+      {reward.kind === "item" && (
         <p className="mt-2 text-lg font-bold text-[var(--poke-blue)]">
-          {STAT_REWARD_LABELS[reward.stat]} permanently +{reward.amount}
+          {reward.quantity}x {getItemLabel(reward.itemId)}
         </p>
       )}
 

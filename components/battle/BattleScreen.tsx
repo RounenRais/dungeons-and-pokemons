@@ -3,6 +3,7 @@
 // Battle screen. It knows no rules: it just plays back the engine's events.
 
 import { GameIcon } from "@/components/icons/GameIcons";
+import { TrainerPortrait } from "@/components/sprites/TrainerPortrait";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { HpPanel } from "./HpPanel";
@@ -24,6 +25,7 @@ import {
   type BattleEvent,
   type BattleState,
   type Side,
+  type TrainerBattleMeta,
 } from "@/lib/battle";
 import { pickBattleBackground } from "@/lib/data/battleBackgrounds";
 import {
@@ -35,11 +37,13 @@ import {
   getCachedSpriteMetrics,
   measureSprite,
 } from "@/lib/game/spriteMetrics";
+import type { CatchThrow } from "@/lib/game/catching";
 import type { RunModifiers } from "@/lib/game/modifiers";
 import type { PartyMemberInput } from "@/lib/game/progression";
 import { getXpToNextLevel } from "@/lib/game/leveling";
 import { getShopItem } from "@/lib/data/shopItems";
 import { TYPE_COLORS } from "@/lib/data/typeChart";
+import { getBallSpriteUrl } from "@/lib/data/pokeballs";
 import { getMemberName } from "@/lib/game/team";
 import type {
   InventoryEntry,
@@ -61,6 +65,17 @@ interface ViewState {
   enemyFainted: boolean;
   playerSubstitute: boolean;
   enemySubstitute: boolean;
+}
+
+type TrainerPose = "enter" | "idle" | "throw" | "react" | "defeat";
+
+/** BattleScreen'in tek arena içindeki görsel katmanları. */
+export interface BattleSceneLayers {
+  background: string;
+  opponentTrainer: TrainerPose | null;
+  opponentPokemon: boolean;
+  playerPokemon: boolean;
+  effects: MoveAnimationState[];
 }
 
 function viewFromState(state: BattleState): ViewState {
@@ -100,11 +115,22 @@ export interface BattleResult {
    * evrimleşen yedeklerin yeni formları (sprite'ları buradan geliyor).
    */
   registeredPokemon: Pokemon[];
-  /** Boss yakalandıysa takıma katılacak üye. */
+  /**
+   * Yakalandıysa yeni üye.
+   *
+   * Üye ARTIK BURADA EKLENMİYOR: store yerleştirmeyi kendisi yaptı (takım
+   * doluysa Box'a) ve nereye gittiğini `capturedDestination` söylüyor. Bu alan
+   * sadece günlük ve pokédex için taşınıyor.
+   */
   capturedMember: TeamMember | null;
   capturedPokemon: Pokemon | null;
+  capturedDestination: "team" | "box" | "full" | null;
+  /** Savaş sonu ödülü bir eşyaysa çantaya eklenecek. */
+  rewardItem: { itemId: string; quantity: number } | null;
   /** Tahta günlüğüne düşecek satırlar. */
   logs: string[];
+  /** Savaşılan trainer'ın gerçek kimliği; sonuç ekranı bunu tahmin etmez. */
+  trainer: TrainerBattleMeta | null;
 }
 
 interface BattleScreenProps {
@@ -121,6 +147,16 @@ interface BattleScreenProps {
   inventory: InventoryEntry[];
   /** Eşya kullanıldığında envanterden düşülmesi için. */
   onConsumeItem: (itemId: string) => void;
+  /** Savaş ve sunum state'ini save'e yazar; switch/reload arena akışını bozmaz. */
+  onStateChange: (state: BattleState) => void;
+  /**
+   * Top atıldı.
+   *
+   * Sonuç animasyondan ÖNCE geliyor. Çağıran taraf topu düşüyor, sonucu kayda
+   * yazıyor ve yakalandıysa Pokémon'u yerleştirip nereye gittiğini döndürüyor.
+   */
+  onThrowBall: (result: CatchThrow) => "team" | "box" | "full" | null;
+  onLeaveCapture: () => void;
   /** Reliklerden gelen koşu değiştiricileri. */
   runModifiers: RunModifiers;
   /** Galibiyet serisi çarpanı. */
@@ -149,6 +185,9 @@ export function BattleScreen({
   teamSize,
   inventory,
   onConsumeItem,
+  onStateChange,
+  onThrowBall,
+  onLeaveCapture,
   runModifiers,
   streakMultiplier,
   expShare,
@@ -163,13 +202,24 @@ export function BattleScreen({
     viewFromState(initialState),
   );
   const [message, setMessage] = useState(
-    `A wild ${initialState.enemy.pokemon.displayName} appeared!`,
+    initialState.trainer !== undefined
+      ? `“${initialState.trainer.dialogue.intro}”`
+      : `A wild ${initialState.enemy.pokemon.displayName} appeared!`,
   );
   const [log, setLog] = useState<string[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [hitSide, setHitSide] = useState<Side | null>(null);
-  const [showResult, setShowResult] = useState(false);
+  const [showResult, setShowResult] = useState(initialState.outcome !== "ongoing");
   const [isBagOpen, setIsBagOpen] = useState(false);
+  const hasTrainerIntro =
+    initialState.trainer !== undefined && initialState.trainerIntroComplete !== true;
+  const [sceneReady, setSceneReady] = useState(!hasTrainerIntro);
+  const [enemyOnField, setEnemyOnField] = useState(!hasTrainerIntro);
+  const [playerOnField, setPlayerOnField] = useState(!hasTrainerIntro);
+  const [trainerPose, setTrainerPose] = useState<TrainerPose>(
+    hasTrainerIntro ? "enter" : "idle",
+  );
+  const [trainerThrowId, setTrainerThrowId] = useState(0);
   const [moveAnimation, setMoveAnimation] = useState<MoveAnimationState | null>(
     null,
   );
@@ -178,6 +228,7 @@ export function BattleScreen({
   const animationId = useRef(0);
   const turnLock = useRef(false);
   const isMounted = useRef(true);
+  const introStarted = useRef(false);
 
   useEffect(() => {
     isMounted.current = true;
@@ -185,6 +236,37 @@ export function BattleScreen({
       isMounted.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!hasTrainerIntro || introStarted.current) return;
+    introStarted.current = true;
+
+    void (async () => {
+      await wait(650);
+      if (!isMounted.current) return;
+      setMessage(
+        `${initialState.trainer?.title ?? "Trainer"} ${initialState.trainer?.name ?? ""} wants to battle!`,
+      );
+      await wait(650);
+      if (!isMounted.current) return;
+      setTrainerPose("throw");
+      setTrainerThrowId((id) => id + 1);
+      await wait(520);
+      if (!isMounted.current) return;
+      setEnemyOnField(true);
+      setTrainerPose("idle");
+      await wait(420);
+      if (!isMounted.current) return;
+      setPlayerOnField(true);
+      await wait(420);
+      if (!isMounted.current) return;
+      setSceneReady(true);
+      setMessage("What will you do?");
+      const persisted = { ...initialState, trainerIntroComplete: true };
+      setBattle(persisted);
+      onStateChange(persisted);
+    })();
+  }, [hasTrainerIntro, initialState, onStateChange]);
 
   const names = {
     player: getMemberName(battle.player.member, battle.player.pokemon),
@@ -236,13 +318,32 @@ export function BattleScreen({
             ? { ...current, playerFainted: true }
             : { ...current, enemyFainted: true };
 
+        /*
+         * Trainer sıradaki Pokémon'unu çıkardı: rakip tarafının görünümü
+         * SIFIRLANIYOR.
+         *
+         * Bunu yapmasak bayılma animasyonu ekranda asılı kalıyor ve HP barı
+         * turun sonundaki yeniden eşitlemeye kadar sıfır gösteriyordu — yani
+         * oyuncu bir saniye boyunca "rakip öldü ama savaş sürüyor" gibi tuhaf
+         * bir ekran görüyordu.
+         */
+        case "enemy-switch":
+          return {
+            ...current,
+            enemyHp: event.toHp,
+            enemyFainted: false,
+            enemyStatus: "none",
+            enemyConfused: false,
+            enemySubstitute: false,
+          };
+
         default:
           return current;
       }
     });
   }, []);
 
-  async function playEvents(events: BattleEvent[]) {
+  async function playEvents(events: BattleEvent[], resolved?: BattleState) {
     for (const event of events) {
       if (!isMounted.current) return;
 
@@ -253,6 +354,31 @@ export function BattleScreen({
       }
 
       applyEventToView(event);
+
+      /*
+       * Motor sıradaki rakibi tur sonucunda zaten kurdu. O state'i tam
+       * `enemy-switch` olayında ekrana geçiriyoruz: bayılan sprite kayboluyor,
+       * yeni sprite kendi HP/status'u ile sahaya giriyor. Önceden state ancak
+       * bütün olaylar bittikten sonra değiştiği için eski sprite 1.1 saniye
+       * boyunca yeniden ayağa kalkıyordu.
+       */
+      if (event.kind === "enemy-switch" && resolved !== undefined) {
+        setEnemyOnField(false);
+        setTrainerPose("react");
+        await wait(260);
+        if (!isMounted.current) return;
+        setTrainerPose("throw");
+        setTrainerThrowId((id) => id + 1);
+        await wait(420);
+        if (!isMounted.current) return;
+        setBattle((current) => ({
+          ...current,
+          enemy: resolved.enemy,
+          enemyTeam: resolved.enemyTeam,
+        }));
+        setEnemyOnField(true);
+        setTrainerPose("idle");
+      }
 
       // Generic animation driven by the move's category and type.
       if (event.kind === "move-used") {
@@ -284,6 +410,15 @@ export function BattleScreen({
         setTimeout(() => setHitSide(null), 260);
       }
 
+      if (event.kind === "damage" && event.side === "enemy" && event.isCrit) {
+        setTrainerPose("react");
+        window.setTimeout(() => setTrainerPose("idle"), 320);
+      }
+
+      if (event.kind === "outcome" && event.result === "win" && battle.trainer) {
+        setTrainerPose("defeat");
+      }
+
       await wait(getEventDelay(event));
     }
   }
@@ -308,6 +443,7 @@ export function BattleScreen({
         );
         current = swap.state;
         setBattle(current);
+        onStateChange(current);
         setView(viewFromState(current));
         await playEvents(swap.events);
         if (!isMounted.current) return;
@@ -329,10 +465,11 @@ export function BattleScreen({
         Math.random,
       );
 
-      await playEvents(result.events);
+      await playEvents(result.events, result.state);
       if (!isMounted.current) return;
 
       setBattle(result.state);
+      onStateChange(result.state);
       setView(viewFromState(result.state));
 
       if (result.state.outcome !== "ongoing") {
@@ -410,7 +547,10 @@ export function BattleScreen({
       registeredPokemon: [],
       capturedMember: null,
       capturedPokemon: null,
+      capturedDestination: null,
+      rewardItem: null,
       logs: [],
+      trainer: battle.trainer ?? null,
     });
   }
 
@@ -431,7 +571,10 @@ export function BattleScreen({
       registeredPokemon: victory.sharedMembers.map((entry) => entry.pokemon),
       capturedMember: victory.capturedMember,
       capturedPokemon: victory.capturedPokemon,
+      capturedDestination: victory.capturedDestination,
+      rewardItem: victory.rewardItem,
       logs: victory.logs,
+      trainer: battle.trainer ?? null,
     });
   }
 
@@ -470,10 +613,15 @@ export function BattleScreen({
   const highlighted = highlightedMove ?? displayedMoves[0] ?? null;
   const reserveCount = countReserves(teamState, activeIdx);
   const canAct =
-    !isPlaying && battle.outcome === "ongoing" && battle.player.currentHp > 0;
+    sceneReady &&
+    !isPlaying &&
+    battle.outcome === "ongoing" &&
+    battle.player.currentHp > 0;
 
-  // Arka plan savaş boyunca sabit kalsın diye düşmanın id'sinden türetiliyor.
-  const background = pickBattleBackground(battle.enemy.pokemon.id + tileIndex);
+  // Seed battle state'te saklanır: trainer yeni Pokémon gönderince arena değişmez.
+  const background = pickBattleBackground(
+    battle.arenaSeed ?? initialState.enemy.pokemon.id + tileIndex,
+  );
 
   const enemySprite =
     battle.enemy.pokemon.sprites.animatedFront ??
@@ -520,7 +668,7 @@ export function BattleScreen({
 
         {/* Opponent status panel — top left */}
         <div
-          className="absolute z-30"
+          className={`absolute z-30 transition-opacity ${enemyOnField ? "opacity-100" : "opacity-0"}`}
           style={{
             left: BATTLE_LAYOUT.enemyPanel.left,
             top: BATTLE_LAYOUT.enemyPanel.top,
@@ -540,21 +688,42 @@ export function BattleScreen({
 
         {/* Both sprites size and place themselves from their own measured
             pixels — see getSpriteBox in lib/data/battleLayout.ts. */}
-        <BattleSprite
-          src={enemySprite}
-          alt={battle.enemy.pokemon.displayName}
-          anchor={BATTLE_LAYOUT.enemySprite}
-          isHit={hitSide === "enemy"}
-          isFainted={view.enemyFainted}
-        />
+        {battle.trainer !== undefined && (
+          <ArenaTrainer
+            trainer={battle.trainer}
+            pose={trainerPose}
+            throwId={trainerThrowId}
+            remaining={battle.enemyTeam.length + (view.enemyFainted ? 0 : 1)}
+          />
+        )}
 
-        <BattleSprite
-          src={playerSprite}
-          alt={names.player}
-          anchor={BATTLE_LAYOUT.playerSprite}
-          isHit={hitSide === "player"}
-          isFainted={view.playerFainted}
-        />
+        {enemyOnField && (
+          <BattleSprite
+            key={battle.enemy.member.instanceId}
+            src={enemySprite}
+            alt={battle.enemy.pokemon.displayName}
+            anchor={
+              battle.trainer !== undefined
+                ? BATTLE_LAYOUT.trainerEnemySprite
+                : BATTLE_LAYOUT.enemySprite
+            }
+            isHit={hitSide === "enemy"}
+            isFainted={view.enemyFainted}
+            entrance="enemy"
+          />
+        )}
+
+        {playerOnField && (
+          <BattleSprite
+            key={battle.player.member.instanceId}
+            src={playerSprite}
+            alt={names.player}
+            anchor={BATTLE_LAYOUT.playerSprite}
+            isHit={hitSide === "player"}
+            isFainted={view.playerFainted}
+            entrance="player"
+          />
+        )}
 
         {/* Weather / terrain badges — top centre of the arena. */}
         {fieldBadges.length > 0 && (
@@ -572,7 +741,7 @@ export function BattleScreen({
 
         {/* Your status panel — bottom right */}
         <div
-          className="absolute z-30"
+          className={`absolute z-30 transition-opacity ${playerOnField ? "opacity-100" : "opacity-0"}`}
           style={{
             right: BATTLE_LAYOUT.playerPanel.right,
             top: BATTLE_LAYOUT.playerPanel.top,
@@ -599,24 +768,28 @@ export function BattleScreen({
         </div>
 
         <div className="gba-command-box gba-text flex flex-col justify-center gap-1.5 px-4 py-2">
-          <CommandButton
-            label="BAG"
-            badge={battleItems.length}
-            disabled={!canAct || battleItems.length === 0}
-            onClick={() => setIsBagOpen(true)}
-          />
-          <CommandButton
-            label="POKéMON"
-            badge={reserveCount}
-            disabled={!canAct || reserveCount === 0}
-            onClick={() => setIsSwitchOpen(true)}
-          />
+          {sceneReady && (
+            <>
+              <CommandButton
+                label="BAG"
+                badge={battleItems.length}
+                disabled={!canAct || battleItems.length === 0}
+                onClick={() => setIsBagOpen(true)}
+              />
+              <CommandButton
+                label="POKéMON"
+                badge={reserveCount}
+                disabled={!canAct || reserveCount === 0}
+                onClick={() => setIsSwitchOpen(true)}
+              />
+            </>
+          )}
         </div>
       </div>
 
       {/* Move menu: 2x2 grid on the left, details of the highlighted move on
           the right — the FRLG FIGHT screen. */}
-      <div className="grid gap-2 sm:grid-cols-[1fr_14rem]">
+      <div className={`grid gap-2 sm:grid-cols-[1fr_14rem] ${sceneReady ? "" : "invisible"}`}>
         <div className="gba-command-box grid grid-cols-2 gap-x-4 gap-y-1 px-4 py-3">
           {displayedMoves.map((move) => (
             <MoveButton
@@ -715,12 +888,17 @@ export function BattleScreen({
           isBoss={battle.isBoss}
           tileIndex={tileIndex}
           teamSize={teamSize}
+          // Yakalanabilirlik tek kaynaktan: savaş state'i. Arayüz kendi
+          // kararını vermiyor, yoksa "düğme görünüyor ama işlemiyor" olurdu.
+          catchable={battle.catchable}
+          captureResolution={battle.captureResolution}
           runModifiers={runModifiers}
           streakMultiplier={streakMultiplier}
           expShare={expShare}
           party={buildShareParty()}
           inventory={inventory}
-          onConsumeBall={onConsumeItem}
+          onThrow={onThrowBall}
+          onLeaveCapture={onLeaveCapture}
           onDone={finishWin}
         />
       )}
@@ -734,12 +912,14 @@ function BattleSprite({
   anchor,
   isHit,
   isFainted,
+  entrance,
 }: {
   src: string | null;
   alt: string;
   anchor: SpriteAnchor;
   isHit: boolean;
   isFainted: boolean;
+  entrance: Side;
 }) {
   // Ölçüm modül seviyesinde önbelleğe alınıyor, o yüzden state tutmuyoruz:
   // render sırasında önbellekten okuyup, yoksa ölçüm bitince yeniden çiziyoruz.
@@ -773,6 +953,11 @@ function BattleSprite({
         width: `${box.width}%`,
         height: `${box.height}%`,
       }}
+      initial={{
+        x: entrance === "enemy" ? 42 : -42,
+        opacity: 0,
+        scale: 0.86,
+      }}
       animate={
         isFainted
           ? { y: 40, opacity: 0, rotate: 12 }
@@ -792,6 +977,81 @@ function BattleSprite({
         className="h-full w-full drop-shadow-[0_5px_6px_rgba(0,0,0,0.4)] [image-rendering:pixelated]"
       />
     </motion.div>
+  );
+}
+
+/** Trainer portre kartı değil, uzak platformda duran fiziksel body sprite. */
+function ArenaTrainer({
+  trainer,
+  pose,
+  throwId,
+  remaining,
+}: {
+  trainer: TrainerBattleMeta;
+  pose: TrainerPose;
+  throwId: number;
+  remaining: number;
+}) {
+  const animate =
+    pose === "throw"
+      ? { x: -12, y: 0, rotate: -6, opacity: 1 }
+      : pose === "react"
+        ? { x: 8, y: 0, rotate: 3, opacity: 1 }
+        : pose === "defeat"
+          ? { x: 0, y: 8, rotate: 0, opacity: 0.75 }
+          : { x: 0, y: 0, rotate: 0, opacity: 1 };
+
+  return (
+    <>
+      <motion.div
+        className="pointer-events-none absolute bottom-[34%] right-[1%] z-10 origin-bottom [image-rendering:pixelated] sm:right-[5%]"
+        initial={pose === "enter" ? { x: 90, opacity: 0 } : false}
+        animate={animate}
+        transition={{ type: "spring", stiffness: 230, damping: 20 }}
+        aria-label={`${trainer.title} ${trainer.name}`}
+      >
+        <span className="sm:hidden">
+          <TrainerPortrait
+            trainerId={trainer.spriteId}
+            size={56}
+            alt={`${trainer.title} ${trainer.name}`}
+          />
+        </span>
+        <span className="hidden sm:inline-block">
+          <TrainerPortrait
+            trainerId={trainer.spriteId}
+            size={112}
+            alt={`${trainer.title} ${trainer.name}`}
+          />
+        </span>
+      </motion.div>
+
+      <div
+        className="pointer-events-none absolute right-2 top-2 z-30 flex gap-0.5 rounded-full bg-black/35 px-1.5 py-1"
+        aria-label={`${remaining} of ${trainer.teamSize} Pokémon remaining`}
+      >
+        {Array.from({ length: trainer.teamSize }, (_, index) => (
+          <span
+            key={index}
+            className={`h-2 w-2 rounded-full border border-white/80 ${
+              index < remaining ? "bg-red-500" : "bg-slate-600"
+            }`}
+          />
+        ))}
+      </div>
+
+      {pose === "throw" && (
+        <motion.img
+          key={throwId}
+          src={getBallSpriteUrl("poke-ball")}
+          alt=""
+          className="pointer-events-none absolute right-[15%] top-[31%] z-30 h-4 w-4 [image-rendering:pixelated] sm:h-6 sm:w-6"
+          initial={{ x: 0, y: 0, rotate: 0, scale: 0.7 }}
+          animate={{ x: "-16vw", y: [0, -34, 12], rotate: 540, scale: 1 }}
+          transition={{ duration: 0.48, ease: "easeOut" }}
+        />
+      )}
+    </>
   );
 }
 

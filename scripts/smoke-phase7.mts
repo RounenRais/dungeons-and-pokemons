@@ -3,11 +3,16 @@
 // boss yakalama, savaş sonrası toparlanma ve XP temposu.
 
 import { executeTurn, startBattle, type BattleState } from '../lib/battle';
-import { getShopItem, getTmPrice, SHOP_CATALOG } from '../lib/data/shopItems';
+import {
+  getShopItem,
+  getTmPrice,
+  LEGACY_STAT_BOOSTER_IDS,
+  SHOP_CATALOG,
+} from '../lib/data/shopItems';
 import { applyItem, canUseItem } from '../lib/game/items';
 import { calculateXpGain, getXpToNextLevel, XP_RATE } from '../lib/game/leveling';
 import { resolveVictory, VICTORY_HEAL_PERCENT } from '../lib/game/progression';
-import { attemptCatch, getCatchChance } from '../lib/game/catching';
+import { getCatchChance, resolveThrow } from '../lib/game/catching';
 import { getBall, POKE_BALLS } from '../lib/data/pokeballs';
 import { buildTmStock } from '../lib/game/shop';
 import { createRandom } from '../lib/game/rng';
@@ -37,7 +42,18 @@ const base: TeamMember = createTeamMember(pikachu, {
 // --- Dükkan kataloğu ---
 check('Katalogda benzersiz id var', new Set(SHOP_CATALOG.map((i) => i.id)).size, SHOP_CATALOG.length);
 check('Her eşyanın fiyatı pozitif', SHOP_CATALOG.every((i) => i.price > 0), true);
-check('the shop covers every category', [...new Set(SHOP_CATALOG.map((i) => i.category))].sort(), ['ball', 'chest', 'evolution-stone', 'potion', 'stat-booster', 'status-heal']);
+check('the shop covers every category', [...new Set(SHOP_CATALOG.map((i) => i.category))].sort(), ['ball', 'chest', 'evolution-stone', 'potion', 'status-heal']);
+/*
+ * Stat boosterlar RAFLARDAN TAMAMEN KALKTI.
+ *
+ * Parayla kalıcı ham stat satmak oyunun güç eğrisini bozan tek kaynaktı: karar
+ * yerini birikime bırakıyordu (bkz. docs/progression.md). Bu test onların geri
+ * sızmasını engelliyor.
+ */
+for (const legacy of LEGACY_STAT_BOOSTER_IDS) {
+  check(`${legacy} artık satılmıyor`, getShopItem(legacy), null);
+}
+check('Katalogda hiç stat-booster yok', SHOP_CATALOG.some((i) => i.category === 'stat-booster'), false);
 const chestPrices = ['common', 'rare', 'epic', 'legendary'].map((t) => getShopItem(`chest-${t}`)?.price ?? 0);
 console.log('INFO  sandık fiyatları:', chestPrices.join(' → '));
 check('Sandık fiyatı tier ile üstel artıyor', chestPrices.every((p, i) => i === 0 || p >= chestPrices[i - 1] * 2), true);
@@ -64,10 +80,16 @@ check('Diriltme bayılmışı ayağa kaldırıyor', applyItem(fainted, pikachu, 
 check('Ayaktayken diriltme kullanılamıyor', applyItem(base, pikachu, 'revive'), null);
 check('Bayılmışa iksir kullanılamıyor', canUseItem(fainted, { kind: 'heal', amount: 30 }), false);
 
-const protein = applyItem(base, pikachu, 'protein');
-check('Protein saldırıyı kalıcı artırıyor', protein?.member.permanentBoosts.attack, 10);
-const hpUp = applyItem(base, pikachu, 'hp-up');
-check('HP Artırıcı max HP\'yi büyütüyor', (hpUp?.member.maxHp ?? 0) > base.maxHp, true);
+/*
+ * Booster eşyaları artık KULLANILAMIYOR.
+ *
+ * Katalogda olmadıkları için `applyItem` onları tanımıyor ve null dönüyor —
+ * yani eski bir kayıtta çantada kalmış bir Protein bile stat veremiyor. Göç
+ * onları paraya çeviriyor (bkz. lib/game/saveMigration.ts), ama göçten kaçan
+ * bir kopya olsa bile burada duvar var.
+ */
+check('Protein kullanılamıyor', applyItem(base, pikachu, 'protein'), null);
+check('HP Up kullanılamıyor', applyItem(base, pikachu, 'hp-up'), null);
 
 // --- TM stoğu ---
 const tmStock = await buildTmStock(pikachu, base.moves.map((m) => m.id), createRandom(4));
@@ -121,7 +143,11 @@ check('Zafer PP\'yi dolduruyor', victory.member.pp[base.moves[0].id], base.moves
 check('Zafer HP\'nin bir kısmını geri veriyor', victory.member.currentHp > 5, true);
 console.log(`INFO  toparlanma: 5 HP → ${victory.member.currentHp}/${victory.member.maxHp} (ayar %${VICTORY_HEAL_PERCENT})`);
 
-// --- Catching ---
+/// --- Catching ---
+//
+// Yakalama artık boss'a özel DEĞİL: hedefin yakalanabilirliği savaş state'inden
+// (`catchable`) geliyor ve bütün vahşi karşılaşmalarda true. Aşağıdaki testler
+// bu sözleşmeyi doğruluyor (bkz. docs/catching.md).
 const bossMember = createTeamMember(squirtle, { level: 22, moves: squirtleMoves, isShiny: false });
 const captureArgs = {
   member: base,
@@ -132,20 +158,43 @@ const captureArgs = {
   tileIndex: 20,
   enemyMember: bossMember,
   teamSize: 1,
+  // Yakalanabilirlik açıkça geçiliyor; tahmin edilmiyor.
+  catchable: true,
+  captureResolution: {
+    encounterId: bossMember.instanceId,
+    phase: 'subdued' as const,
+    attemptUsed: false,
+    resultApplied: false,
+  },
 };
 
 const bossWin = await resolveVictory({ ...captureArgs, random: createRandom(1) });
-check('beating a boss offers a catch', bossWin.catchTarget !== null, true);
-check('the catch target is the boss species', bossWin.catchTarget?.pokemon.name, 'squirtle');
-check('the catch target keeps the boss level', bossWin.catchTarget?.member.level, 22);
+check('a catchable target produces a catch offer', bossWin.catchTarget !== null, true);
+check('the catch target is the right species', bossWin.catchTarget?.pokemon.name, 'squirtle');
+check('the catch target keeps its level', bossWin.catchTarget?.member.level, 22);
 check('the catch target starts at full HP', bossWin.catchTarget?.member.currentHp, bossWin.catchTarget?.member.maxHp);
 check('the catch target carries a capture rate', (bossWin.catchTarget?.captureRate ?? 0) > 0, true);
+check('the catch target is subdued after victory', bossWin.catchTarget?.isSubdued, true);
 check('winning alone never adds a team member', 'capture' in bossWin, false);
 
+/*
+ * TAKIM DOLUYKEN DE yakalama teklif ediliyor.
+ *
+ * Eskiden takım altı üyeyle doluysa `catchTarget` null dönüyordu, yani oyuncuya
+ * yakalama seçeneği hiç gösterilmiyordu. Artık Box var: takım doluysa yakalanan
+ * Pokémon oraya gidiyor (bkz. lib/game/box.ts). Bu testin varlık sebebi o
+ * regresyonu bir daha yaşamamak.
+ */
 const fullTeamWin = await resolveVictory({ ...captureArgs, teamSize: MAX_TEAM_SIZE, random: createRandom(1) });
-check('a full team gets no catch offer', fullTeamWin.catchTarget, null);
+check('a full party still gets a catch offer (it goes to the Box)', fullTeamWin.catchTarget !== null, true);
+
+// Vahşi karşılaşmalar da yakalanabilir — boss olması şart değil.
 const wildWin = await resolveVictory({ ...captureArgs, isBoss: false, random: createRandom(1) });
-check('wild battles offer no catch', wildWin.catchTarget, null);
+check('wild battles offer a catch too', wildWin.catchTarget !== null, true);
+
+// Trainer'ın Pokémon'u hiçbir koşulda yakalanamaz.
+const trainerWin = await resolveVictory({ ...captureArgs, catchable: false, random: createRandom(1) });
+check('a trainer-owned Pokémon is never catchable', trainerWin.catchTarget, null);
 
 // Ball quality has to matter, and a rare species has to be harder.
 const commonRate = 190;
@@ -158,7 +207,16 @@ const greatChance = getCatchChance(midRate, 1.5);
 const ultraChance = getCatchChance(midRate, 2);
 console.log(`INFO  capture rate 45 -> Poke ${(pokeChance * 100).toFixed(0)}%, Great ${(greatChance * 100).toFixed(0)}%, Ultra ${(ultraChance * 100).toFixed(0)}%`);
 check('a better ball catches more often', pokeChance < greatChance && greatChance < ultraChance, true);
-check('a common species is easy with a plain ball', getCatchChance(commonRate, 1) > 0.6, true);
+/*
+ * `getCatchChance`in varsayılan HP oranı DEĞİŞTİ.
+ *
+ * Eskiden %5 ("bayılmış") varsayıyordu, çünkü top sadece yenilmiş boss'lara
+ * atılıyordu. Artık her vahşi savaşta atılabiliyor ve varsayılan tam HP.
+ * "Kolay" olması için hedefin yıpranmış olması gerekiyor — ki oyunun söylediği
+ * şey de bu.
+ */
+check('a common species is easy once worn down', getCatchChance(commonRate, 1, 0.1) > 0.6, true);
+check('the same species at full HP is not a formality', getCatchChance(commonRate, 1, 1) < 0.6, true);
 check('a rare species is much harder', getCatchChance(rareRate, 1) < getCatchChance(commonRate, 1) / 4, true);
 console.log(`INFO  capture rate 3 -> Poke ${(getCatchChance(rareRate, 1) * 100).toFixed(1)}%, Ultra ${(getCatchChance(rareRate, 2) * 100).toFixed(1)}%`);
 check('the Master Ball never fails', getCatchChance(rareRate, Infinity), 1);
@@ -168,15 +226,42 @@ check('getBall resolves a known id', getBall('ultra-ball')?.multiplier, 2);
 check('getBall rejects an unknown id', getBall('nope'), null);
 
 // Throws must actually land sometimes, and never with a broken shake count.
-const throws = Array.from({ length: 400 }, (_, i) => attemptCatch(midRate, 'poke-ball', createRandom(i + 1)));
+/*
+ * `attemptCatch` yerini `resolveThrow`a bıraktı.
+ *
+ * Fark sadece isim değil: eski imza HP'yi bilmiyordu ve sabit bir "bayılmış"
+ * oranı varsayıyordu, çünkü top sadece boss'lara atılıyordu. Artık her vahşi
+ * savaşta atılıyor ve HP formülün asıl girdisi (bkz. docs/catching.md).
+ */
+const throwInput = {
+  currentHp: 100,
+  maxHp: 100,
+  captureRate: midRate,
+  ballId: 'poke-ball',
+  status: 'none' as const,
+};
+const throws = Array.from({ length: 400 }, (_, i) =>
+  resolveThrow(throwInput, createRandom(i + 1)),
+);
 const caughtCount = throws.filter((t) => t.caught).length;
 console.log(`INFO  400 Poke Ball throws at rate 45: ${caughtCount} caught (expected ~${Math.round(pokeChance * 400)})`);
 check('throws land at roughly the stated rate', Math.abs(caughtCount / 400 - pokeChance) < 0.1, true);
 check('shake counts stay in range', throws.every((t) => t.shakes >= 0 && t.shakes <= 4), true);
 check('a catch always shows four shakes', throws.filter((t) => t.caught).every((t) => t.shakes === 4), true);
 check('a miss never shows four shakes', throws.filter((t) => !t.caught).every((t) => t.shakes < 4), true);
-check('the Master Ball always holds', Array.from({ length: 30 }, (_, i) => attemptCatch(rareRate, 'master-ball', createRandom(i + 1))).every((t) => t.caught), true);
-check("the Hunter's Lure raises the odds", attemptCatch(rareRate, 'poke-ball', () => 0.2, { bonus: 0.25 }).chance > getCatchChance(rareRate, 1), true);
+check('the Master Ball always holds', Array.from({ length: 30 }, (_, i) =>
+  resolveThrow(
+    { ...throwInput, captureRate: rareRate, ballId: 'master-ball' },
+    createRandom(i + 1),
+  ),
+).every((t) => t.caught), true);
+check("the Hunter's Lure raises the odds",
+  resolveThrow(
+    { ...throwInput, captureRate: rareRate, bonus: 0.25 },
+    () => 0.2,
+  ).chance > resolveThrow({ ...throwInput, captureRate: rareRate }, () => 0.2).chance,
+  true,
+);
 
 // --- XP temposu ---
 check('XP oranı ayarlandı', XP_RATE, 1);
@@ -267,7 +352,14 @@ check('Boss daha çok XP veriyor', calculateXpGain(60, 5, true) > xpAt5, true);
 
 // --- Ucuzlayan katalog -----------------------------------------------------
 {
-  check('Poke Ball 125 coin', getBallDef('poke-ball')?.price, 125);
+  /*
+   * Poké Ball 125'ten 70'e indi.
+   *
+   * Sebep: artık bütün vahşi Pokémon'lar yakalanabilir ve yakalama takım
+   * kurmanın tek yolu. 125 coin'de ilk act'te bir top alınabiliyordu ve o top
+   * harcandıktan sonra act boyunca yakalama yapılamıyordu.
+   */
+  check('Poke Ball ucuzladi', getBallDef('poke-ball')?.price, 70);
   const before = { 'great-ball': 400, 'ultra-ball': 900, 'master-ball': 6000 };
   for (const [id, old] of Object.entries(before)) {
     const price = getBallDef(id)?.price ?? 0;

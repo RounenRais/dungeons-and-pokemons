@@ -2,6 +2,13 @@
 
 export { chooseEnemyMove, type ChooseMoveOptions } from "./ai";
 export {
+  AI_PROFILES,
+  getAiProfile,
+  getDefaultProfile,
+  type AiProfile,
+  type AiProfileId,
+} from "./aiProfiles";
+export {
   calculateDamage,
   estimateDamage,
   rollAccuracy,

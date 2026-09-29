@@ -134,6 +134,19 @@ export interface DamageOptions {
   critBlocked?: boolean;
   /** Focus Energy: kritik aşaması +2. */
   focusEnergy?: boolean;
+  /**
+   * Savaşın ilk hamlesi mi? (Worn Whetstone reliği bunu kullanıyor.)
+   */
+  isOpener?: boolean;
+  /**
+   * Hedef bir Gym Leader / Elite Four / Champion kadrosundan mı?
+   * (Gym Token reliği bunu kullanıyor.)
+   */
+  versusLeader?: boolean;
+  /**
+   * Savunan bu tur sahaya YENİ mi girdi? (Swap Harness reliği.)
+   */
+  defenderSwitchedIn?: boolean;
 }
 
 export function calculateDamage(
@@ -183,9 +196,28 @@ export function calculateDamage(
       relicMultiplier *= attackerMods.specialDamageMultiplier;
     }
     relicMultiplier *= attackerMods.typeDamageMultipliers[moveType] ?? 1;
+
+    // Type Prism: aktif Pokémon'un BİRİNCİ tipiyle eşleşen hamleler.
+    // İlk tip, çünkü çift tipli bir Pokémon'da ikisini de saymak relic'i iki
+    // kat güçlendirirdi.
+    if (attacker.pokemon.types[0] === moveType) {
+      relicMultiplier *= attackerMods.stabMultiplier;
+    }
+    // Gym Token: sadece lig kadrolarına karşı.
+    if (options.versusLeader === true) {
+      relicMultiplier *= attackerMods.versusLeaderMultiplier;
+    }
+    // Worn Whetstone: savaşın ilk hamlesi.
+    if (options.isOpener === true) {
+      relicMultiplier *= attackerMods.openerMultiplier;
+    }
   }
   if (options.defenderModifiers !== undefined) {
     relicMultiplier *= options.defenderModifiers.damageTakenMultiplier;
+    // Swap Harness: sahaya yeni girenin o turdaki koruması.
+    if (options.defenderSwitchedIn === true) {
+      relicMultiplier *= options.defenderModifiers.switchInDamageMultiplier;
+    }
   }
 
   const fieldMultiplier =

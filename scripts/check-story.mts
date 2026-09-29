@@ -143,11 +143,20 @@ function checkEvent(event: StoryEvent): void {
 // --- 1. Hikâye olayları ----------------------------------------------------
 
 console.log(`${STORY_EVENTS.length} story events`);
+if (STORY_EVENTS.length < 40 || STORY_EVENTS.length > 50) {
+  fail(`authored event target is 40-50, got ${STORY_EVENTS.length}`);
+}
 const ids = new Set<string>();
 for (const event of STORY_EVENTS) {
   if (ids.has(event.id)) fail(`duplicate event id: ${event.id}`);
   ids.add(event.id);
   checkEvent(event);
+}
+
+for (const band of ["intro", "society", "corruption", "conspiracy", "reckoning"] as const) {
+  const count = STORY_EVENTS.filter((event) => event.band === band).length;
+  if (count < 2) fail(`${band} band needs at least 2 authored events, got ${count}`);
+  console.log(`${band}: ${count} authored events`);
 }
 
 // --- 2. Eski olaylar yeni şemaya adapte oluyor mu? -------------------------

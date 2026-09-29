@@ -41,10 +41,13 @@ export function StoryEventRunner({ event, onFinished }: StoryEventRunnerProps) {
   const player = useGameStore((state) => state.player);
   const pokedex = useGameStore((state) => state.pokedex);
   const relics = useGameStore((state) => state.relics);
+  const boons = useGameStore((state) => state.boons);
+  const league = useGameStore((state) => state.league);
 
   const context = useMemo(
-    () => selectStoryContext({ story, act, player, pokedex, relics }),
-    [story, act, player, pokedex, relics],
+    () =>
+      selectStoryContext({ story, act, player, pokedex, relics, boons, league }),
+    [story, act, player, pokedex, relics, boons, league],
   );
   const occurrence = useMemo(
     () => getOccurrence(story, event.id),

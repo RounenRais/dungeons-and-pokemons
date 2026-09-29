@@ -48,12 +48,16 @@ import {
   getStatusDuration,
 } from "./status";
 import { createVolatileState, cloneVolatileState } from "./volatile";
+import type { AiProfileId } from "./aiProfiles";
+import type { BossPhase } from "@/lib/data/bossPhases";
 import type {
   BattleEvent,
   BattleState,
   BlockReason,
   Combatant,
+  EnemyReserve,
   Side,
+  TrainerBattleMeta,
   TurnResult,
 } from "./types";
 import type { Move, Pokemon, StatusAilment, TeamMember } from "@/lib/types";
@@ -174,6 +178,24 @@ export interface StartBattleArgs {
   playerModifiers?: BattleModifiers;
   /** Düşman AI'ının ustalığı (0 = tamamen rastgele, 1 = en iyi hamle). */
   enemySkill?: number;
+  /** Düşmanın oynama biçimi (bkz. `lib/battle/aiProfiles.ts`). */
+  enemyProfile?: AiProfileId;
+  /** Trainer'ın sahaya çıkmamış Pokémon'ları, çıkış sırasıyla. */
+  enemyTeam?: readonly EnemyReserve[];
+  isTrainerBattle?: boolean;
+  /** Sonuç/diyalog akışının save sonrasında da aynı trainer'ı kullanması için. */
+  trainer?: TrainerBattleMeta;
+  /** Efsanevi boss'un faz tanımları. */
+  bossPhases?: readonly BossPhase[];
+  /**
+   * Sahadaki düşmana top atılabilir mi?
+   *
+   * Verilmezse yalnızca sıradan wild savaşlar true olur. Boss ve trainer
+   * çağıranları wild olup olmadığını açıkça belirtmek zorundadır.
+   */
+  catchable?: boolean;
+  /** Arena görselini savaş boyunca sabitleyen seed. */
+  arenaSeed?: number;
 }
 
 export function startBattle({
@@ -185,7 +207,15 @@ export function startBattle({
   playerReserves = 0,
   playerModifiers,
   enemySkill,
+  enemyProfile,
+  enemyTeam = [],
+  isTrainerBattle = false,
+  trainer,
+  bossPhases = [],
+  catchable,
+  arenaSeed,
 }: StartBattleArgs): BattleState {
+  const canCapture = catchable ?? (!isTrainerBattle && !isBoss);
   return {
     player: createCombatant("player", playerPokemon, playerMember),
     enemy: createCombatant("enemy", enemyPokemon, enemyMember),
@@ -198,6 +228,24 @@ export function startBattle({
     field: createFieldState(),
     sides: createSides(),
     enemySkill: enemySkill ?? (isBoss ? 1 : 0.2),
+    enemyProfile,
+    enemyTeam: [...enemyTeam],
+    bossPhases: [...bossPhases],
+    bossPhaseIndex: 0,
+    isTrainerBattle,
+    trainer,
+    // Trainer'ın Pokémon'u hiçbir koşulda yakalanamaz.
+    catchable: canCapture,
+    arenaSeed: arenaSeed ?? enemyPokemon.id,
+    captureResolution: canCapture
+      ? {
+          encounterId: enemyMember.instanceId,
+          phase: "fighting",
+          attemptUsed: false,
+          resultApplied: false,
+        }
+      : undefined,
+    trainerIntroComplete: !isTrainerBattle,
   };
 }
 
@@ -241,7 +289,96 @@ function cloneState(state: BattleState): BattleState {
       player: cloneSide(state.sides.player),
       enemy: cloneSide(state.sides.enemy),
     },
+    // Kopyalanmak ZORUNDA: `checkOutcome` sıradaki Pokémon'u `shift` ile
+    // alıyor, ve dizi paylaşılırsa bu çağıranın state'ini de değiştirir —
+    // motorun saflığı da, "aynı turu iki kez çalıştırma" güvenliği de biter.
+    enemyTeam: (state.enemyTeam ?? []).map((reserve) => ({ ...reserve })),
+    // Faz listesi kopyalanıyor; indeks bir sayı olduğu için `...state` yeterli.
+    bossPhases: [...(state.bossPhases ?? [])],
   };
+}
+
+/**
+ * Boss'un HP'si bir faz eşiğinin altına indi mi? İndiyse fazı uygular.
+ *
+ * Tur sonunda, sonuç kontrolünden ÖNCE çağrılıyor: boss bayılmışsa faz
+ * tetiklenmemeli (ölmüş bir şeyin dönüşmesi anlamsız), ve hayatta kaldığı sürece
+ * dönüşüm oyuncunun bir sonraki turunu etkilemeli.
+ *
+ * Her faz bir kez çalışıyor: `bossPhaseIndex` ilerliyor ve geri gitmiyor. Bu,
+ * HP'nin iyileşip tekrar düşmesi hâlinde aynı fazın tekrar tetiklenmesini
+ * engelliyor.
+ */
+function applyBossPhases(state: BattleState, events: BattleEvent[]): void {
+  const phases = state.bossPhases;
+  if (phases.length === 0) return;
+  if (state.bossPhaseIndex >= phases.length) return;
+  if (state.enemy.currentHp <= 0) return;
+
+  const ratio = state.enemy.currentHp / Math.max(1, state.enemy.maxHp);
+
+  while (state.bossPhaseIndex < phases.length) {
+    const phase = phases[state.bossPhaseIndex];
+    if (ratio > phase.hpThreshold) break;
+
+    state.bossPhaseIndex += 1;
+    events.push({
+      kind: "boss-phase",
+      label: phase.label,
+      text: phase.message,
+    });
+
+    if (phase.profile !== undefined) state.enemyProfile = phase.profile;
+
+    if (phase.weather !== undefined) {
+      state.field.weather = { kind: phase.weather, turns: FIELD_DURATION };
+      events.push({
+        kind: "field",
+        text: `${WEATHER_LABELS[phase.weather]} filled the battlefield!`,
+      });
+    }
+    if (phase.terrain !== undefined) {
+      state.field.terrain = { kind: phase.terrain, turns: FIELD_DURATION };
+      events.push({
+        kind: "field",
+        text: `${TERRAIN_LABELS[phase.terrain]} covered the ground!`,
+      });
+    }
+
+    for (const [stat, delta] of Object.entries(phase.stages ?? {})) {
+      if (delta === undefined || delta === 0) continue;
+      const result = applyStageChange(
+        state.enemy.stages,
+        stat as keyof typeof state.enemy.stages,
+        delta,
+      );
+      state.enemy.stages = result.stages;
+      if (result.applied !== 0) {
+        events.push({
+          kind: "stat-change",
+          side: "enemy",
+          stat: stat as keyof typeof state.enemy.stages,
+          delta,
+          applied: result.applied,
+        });
+      }
+    }
+
+    /*
+     * Durum efektini atmak: kilitlenmeyi kıran mekanik.
+     *
+     * Bağışıklık VERMİYOR — oyuncu boss'u tekrar uyutabilir. Sadece bir faz
+     * geçişinde bir kere bedava kurtuluyor, ki "uyut ve bekle" tek başına bir
+     * strateji olmasın.
+     */
+    if (phase.shedStatus === true && state.enemy.status !== "none") {
+      const cured = state.enemy.status;
+      state.enemy.status = "none";
+      state.enemy.statusTurns = 0;
+      state.enemy.volatile.toxicCounter = 0;
+      events.push({ kind: "status-cured", side: "enemy", status: cured });
+    }
+  }
 }
 
 // --- Yardımcılar -----------------------------------------------------------
@@ -1750,6 +1887,13 @@ function dealDamage(
       screens: sideOf(state, defender.side),
       critBlocked: sideOf(state, defender.side).luckyChant > 0,
       focusEnergy: attacker.volatile.focusEnergy,
+      // Worn Whetstone: savaşın ilk turu, saldıranın ilk hamlesi.
+      isOpener: state.turn === 1,
+      // Gym Token: rakip bir lig kadrosu mu? Trainer savaşı ve boss işareti
+      // birlikte "bu sıradan bir vahşi karşılaşma değil" demek.
+      versusLeader: state.isTrainerBattle && state.isBoss,
+      // Swap Harness: savunan bu tur sahaya yeni girdiyse.
+      defenderSwitchedIn: defender.volatile.turnsActive <= 1,
     });
     effectiveness = result.effectiveness;
 
@@ -1879,6 +2023,30 @@ function applyEndOfTurn(
   random: RandomFn,
 ): void {
   // Yaşam Taşı: oyuncu her tur sonunda bir miktar HP yeniler.
+  /*
+   * Cursed reliklerin tur sonu bedeli (Binding Oath).
+   *
+   * Regen'den ÖNCE uygulanıyor: ikisi birlikte taşındığında oyuncu net
+   * farkı görsün, ve bedel "regen tarafından yutulan görünmez bir şey"
+   * olmasın. Bayıltmıyor — en az 1 HP bırakıyor, çünkü bir relic'in kendi
+   * başına koşuyu bitirmesi bir bedel değil bir tuzak olurdu.
+   */
+  const drainPercent = state.playerModifiers.turnDrainPercent;
+  if (drainPercent > 0 && state.player.currentHp > 1) {
+    const amount = Math.min(
+      state.player.currentHp - 1,
+      Math.max(1, Math.floor((state.player.maxHp * drainPercent) / 100)),
+    );
+    state.player.currentHp -= amount;
+    events.push({
+      kind: "volatile-damage",
+      side: "player",
+      label: "Binding Oath",
+      amount,
+      newHp: state.player.currentHp,
+    });
+  }
+
   const regenPercent = state.playerModifiers.regenPercent;
   if (regenPercent > 0 && state.player.currentHp > 0) {
     const healed = Math.min(
@@ -2171,7 +2339,32 @@ function checkOutcome(state: BattleState, events: BattleEvent[]): void {
 
   if (state.enemy.currentHp <= 0) {
     events.push({ kind: "faint", side: "enemy" });
+
+    // Trainer'ın kadrosu bitmediyse savaş bitmiyor: sıradaki Pokémon sahaya
+    // geliyor. Mainline'daki trainer savaşı tam olarak böyle akıyor.
+    const next = state.enemyTeam.shift();
+    if (next !== undefined) {
+      const fallenName =
+        state.enemy.member.nickname ?? state.enemy.pokemon.displayName;
+
+      state.enemy = createCombatant("enemy", next.pokemon, next.member);
+      // Sahadan çıkan Pokémon'un bıraktığı geçici etkiler onunla gidiyor;
+      // taraf etkileri (Reflect, Tailwind) ve hava kalıyor — mainline kuralı.
+      events.push({
+        kind: "enemy-switch",
+        fromName: fallenName,
+        toName: next.member.nickname ?? next.pokemon.displayName,
+        remaining: state.enemyTeam.length,
+        toHp: state.enemy.currentHp,
+        toMaxHp: state.enemy.maxHp,
+      });
+      return;
+    }
+
     state.outcome = "win";
+    if (state.catchable && !state.isTrainerBattle && state.captureResolution) {
+      state.captureResolution.phase = "subdued";
+    }
     events.push({ kind: "outcome", result: "win" });
     return;
   }
@@ -2353,8 +2546,10 @@ export function executeTurn(
     }
   } else {
     const order = determineOrder(state, playerAction.move, enemyMove, random, {
+      // Quick Boots artık seviyeli: Seviye 1 sadece ilk tur, Seviye 3 ilk
+      // üç tur öncelik veriyor.
       firstTurnPriority:
-        state.turn === 1 && state.playerModifiers.firstTurnPriority,
+        state.turn <= state.playerModifiers.firstTurnPriorityTurns,
     });
 
     for (const side of order) {
@@ -2383,6 +2578,18 @@ export function executeTurn(
   if (state.outcome === "ongoing") {
     applyEndOfTurn(state, events, random);
     checkOutcome(state, events);
+  }
+
+  /*
+   * Boss fazları turun EN SONUNDA, sonuç kesinleştikten sonra.
+   *
+   * Sıra önemli: savaş bittiyse (boss bayıldıysa) faz tetiklenmiyor — ölmüş bir
+   * şeyin dönüşmesi anlamsız ve oyuncuya kazandığı savaşı geri alınmış gibi
+   * gösterir. Savaş sürüyorsa dönüşüm burada oluyor, yani oyuncu bir sonraki
+   * turuna yeni duruma bakarak giriyor.
+   */
+  if (state.outcome === "ongoing") {
+    applyBossPhases(state, events);
   }
 
   settleProtection(state);

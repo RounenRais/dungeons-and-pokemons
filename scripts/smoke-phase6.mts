@@ -1,9 +1,8 @@
 // Faz 6 doğrulaması: kasa ödül tablosu, tier ölçeklemesi, CS:GO şeridi.
 
 import {
-  applyChestBoost,
   buildReel,
-  getChestBoost,
+  getChestItem,
   getChestGold,
   resolveChestLoot,
   rollChestLoot,
@@ -13,8 +12,8 @@ import {
   type ChestLootKind,
 } from '../lib/game/chest';
 import { EVOLUTION_STONES, getItem, getItemLabel } from '../lib/data/items';
+import { getShopItem } from '../lib/data/shopItems';
 import { createRandom } from '../lib/game/rng';
-import { calculateMaxHp } from '../lib/game/stats';
 import { createTeamMember, MAX_TEAM_SIZE } from '../lib/game/team';
 import { getMoves, getPokemon, selectStartingMoveIds } from '../lib/pokeapi';
 import type { Rarity, TeamMember } from '../lib/types';
@@ -65,12 +64,44 @@ const goldByTier = TIERS.map((tier) => {
 console.log('INFO  ortalama altın:', TIERS.map((t, i) => `${t} ${goldByTier[i].toFixed(0)}`).join(' | '));
 check('Altın tier ile artıyor', goldByTier.every((v, i) => i === 0 || v > goldByTier[i - 1]), true);
 
-const boostByTier = TIERS.map((tier) => {
-  const amounts = Array.from({ length: 200 }, (_, i) => getChestBoost(tier, createRandom(i + 1)));
+/*
+ * Kasadan artık kalıcı stat değil SARF MALZEMESİ düşüyor.
+ *
+ * Kasa satın alınabilir bir şey olduğu için "kasadan kalıcı stat" pratikte
+ * "parayla sınırsız stat" demekti (bkz. docs/progression.md). Yerine top,
+ * iksir ve Revive düşüyor — güç veriyorlar ama harcanıyorlar.
+ */
+const itemQuantityByTier = TIERS.map((tier) => {
+  const amounts = Array.from(
+    { length: 200 },
+    (_, i) => getChestItem(tier, createRandom(i + 1)).quantity,
+  );
   return amounts.reduce((s, x) => s + x, 0) / amounts.length;
 });
-console.log('INFO  ortalama güçlendirme:', TIERS.map((t, i) => `${t} ${boostByTier[i].toFixed(1)}`).join(' | '));
-check('Güçlendirme tier ile artıyor', boostByTier.every((v, i) => i === 0 || v > boostByTier[i - 1]), true);
+console.log(
+  'INFO  ortalama eşya adedi:',
+  TIERS.map((t, i) => `${t} ${itemQuantityByTier[i].toFixed(1)}`).join(' | '),
+);
+check(
+  'Eşya adedi tier ile artıyor (ya da eşit kalıyor)',
+  itemQuantityByTier[3] > itemQuantityByTier[0],
+  true,
+);
+check(
+  'Düşen eşyalar katalogda tanımlı',
+  TIERS.every((tier) =>
+    Array.from({ length: 120 }, (_, i) => getChestItem(tier, createRandom(i + 1)))
+      .every((drop) => getShopItem(drop.itemId) !== null),
+  ),
+  true,
+);
+check(
+  'Master Ball tek düşüyor',
+  Array.from({ length: 2000 }, (_, i) => getChestItem('legendary', createRandom(i + 1)))
+    .filter((drop) => drop.itemId === 'master-ball')
+    .every((drop) => drop.quantity === 1),
+  true,
+);
 check('Altın kare indeksiyle de artıyor', getChestGold('common', 40, createRandom(1)) > getChestGold('common', 0, createRandom(1)), true);
 
 // --- Ödül türü dağılımı ---
@@ -85,7 +116,7 @@ check('Sıradan kasadan taş çıkmıyor', commonKinds.has('stone'), false);
 check('Sıradan kasadan Pokémon çıkmıyor', commonKinds.has('pokemon'), false);
 
 const legendaryKinds = new Set(sample('legendary').map((l) => l.kind));
-check('Efsanevi kasada beş kategori de var', [...legendaryKinds].sort(), ['boost', 'gold', 'move', 'pokemon', 'stone']);
+check('Efsanevi kasada beş kategori de var', [...legendaryKinds].sort(), ['gold', 'item', 'move', 'pokemon', 'stone']);
 
 const stoneRate = (tier: Rarity) =>
   sample(tier).filter((l) => l.kind === 'stone').length / 600;
@@ -105,18 +136,6 @@ check('Taşlar çoğunlukla işe yarayanlardan seçiliyor', usefulCount / stones
 check('Üretilen taşlar tanımlı', stones.every((l) => getItem(l.itemId) !== null), true);
 check('stone labels are English', getItemLabel('fire-stone'), 'Fire Stone');
 check('10 evrim taşı tanımlı', EVOLUTION_STONES.length, 10);
-
-// --- Güçlendirme uygulama ---
-const hpBoosted = applyChestBoost(member, eevee, 'hp', 10);
-check('HP güçlendirmesi max HP\'yi büyütüyor', hpBoosted.maxHp, calculateMaxHp(eevee.baseStats, member.level, { hp: 10 }));
-check('HP güçlendirmesinde mevcut HP de artıyor', hpBoosted.currentHp - member.currentHp, hpBoosted.maxHp - member.maxHp);
-const atkBoosted = applyChestBoost(member, eevee, 'attack', 7);
-check('Saldırı güçlendirmesi kalıcı boost\'a yazılıyor', atkBoosted.permanentBoosts.attack, 7);
-check('Saldırı güçlendirmesi max HP\'ye dokunmuyor', atkBoosted.maxHp, member.maxHp);
-const stacked = applyChestBoost(atkBoosted, eevee, 'attack', 3);
-check('Güçlendirmeler üst üste biniyor', stacked.permanentBoosts.attack, 10);
-const faintedBoost = applyChestBoost({ ...member, currentHp: 0 }, eevee, 'hp', 10);
-check('Bayılmış Pokémon HP ödülüyle dirilmiyor', faintedBoost.currentHp, 0);
 
 // --- CS:GO şeridi ---
 const winner = await resolveChestLoot(createRandom(9), contextFor('epic'));

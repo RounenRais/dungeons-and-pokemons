@@ -238,6 +238,14 @@ export type ItemCategory =
   | "ball"
   | "potion"
   | "status-heal"
+  /**
+   * SADECE ESKİ KAYITLAR İÇİN.
+   *
+   * Kalıcı ham stat satan eşyalar oyundan kaldırıldı (bkz.
+   * `docs/progression.md`). Kategori union'da duruyor çünkü eski bir kayıttaki
+   * envanter girdisi hâlâ bu kategoriyi taşıyor olabilir ve göç onu tanımak
+   * zorunda. Katalogda bu kategoride HİÇBİR eşya yok.
+   */
   | "stat-booster"
   | "evolution-stone"
   | "tm"

@@ -83,6 +83,57 @@ export interface StoryState {
   eventHistory: EventHistoryEntry[];
 }
 
+/**
+ * Seviye bantları.
+ *
+ * Brief'teki beş bant: her biri farklı bir konuyu taşıyor ve act aralıklarıyla
+ * eşleniyor (bkz. `BAND_ACTS`).
+ */
+export type StoryBand =
+  /** 5-25: bölge, rakipler ve League'i tanıma. */
+  | "intro"
+  /** 26-50: casino, turnuva, gruplar ve ilişkiler. */
+  | "society"
+  /** 51-75: corruption, kaybolan trainerlar, daha sert kararlar. */
+  | "corruption"
+  /** 76-90: Giratina etkisi ve League komplosu. */
+  | "conspiracy"
+  /** 91-100: Victory Road, Elite Four ve geçmiş kararların geri dönüşü. */
+  | "reckoning";
+
+export const STORY_BANDS: readonly StoryBand[] = [
+  "intro",
+  "society",
+  "corruption",
+  "conspiracy",
+  "reckoning",
+];
+
+/**
+ * Bandın act aralığı.
+ *
+ * Act'ler lig aşamalarına karşılık geliyor (bkz. `lib/game/league.ts`), ve
+ * aşamaların level bantları brief'teki tabloyla aynı — yani buradaki act
+ * aralıkları doğrudan level aralıklarına çevriliyor:
+ *
+ *   intro       act 0-2   → level 5-35
+ *   society     act 3-5   → level 36-65
+ *   corruption  act 5-7   → level 46-85
+ *   conspiracy  act 7-8   → level 66-92
+ *   reckoning   act 9-10  → level 93-100
+ *
+ * Bantlar bilerek ÖRTÜŞÜYOR: keskin bir kesim, act geçişinde olay havuzunun
+ * tamamen değişmesi demek olurdu ve oyuncu aynı act içinde iki bandın
+ * olaylarını görmeyi bekliyor.
+ */
+export const BAND_ACTS: Record<StoryBand, { min: number; max: number }> = {
+  intro: { min: 0, max: 2 },
+  society: { min: 3, max: 5 },
+  corruption: { min: 5, max: 7 },
+  conspiracy: { min: 7, max: 8 },
+  reckoning: { min: 9, max: 10 },
+};
+
 export const STORY_DEFAULT_ARC = "roadside";
 
 export function createStoryState(): StoryState {
@@ -133,6 +184,10 @@ export interface StoryRequirement {
   /** Çantada bu eşya olmalı. */
   requiresItem?: string;
   requiresRelic?: RelicId;
+  /** Bu relic en az bu seviyede olmalı. */
+  requiresRelicLevel?: { readonly relicId: RelicId; readonly level: number };
+  /** En az bu kadar Gym rozeti kazanılmış olmalı. */
+  minBadges?: number;
   /** Aktif Pokémon bu tiplerden birine sahip olmalı. */
   activePokemonType?: readonly PokemonType[];
   /** Aktif Pokémon en az bu seviyede olmalı. */
@@ -274,6 +329,23 @@ export interface StorySpeaker {
   role?: string;
 }
 
+/**
+ * Olayın başındaki resim.
+ *
+ * Eski olay formatından (`lib/data/mapEvents.ts`) taşındı: o olayların hepsinin
+ * bir resmi vardı ve tek bir renderer'a geçerken onu kaybetmek, olayların
+ * yarısını görsel olarak çıplak bırakmak olurdu. Yeni olaylar da
+ * kullanabiliyor — bir sahnede konuşan biri yoksa ama bir NESNE varsa (bir
+ * eşya, bir Pokémon) `art` doğru araç.
+ *
+ * Üç kaynak da GERÇEK: PokeAPI Pokémon sprite'ları, PokeAPI eşya görselleri ve
+ * projenin çizilmiş ikonları. Hiçbiri üretilmiyor.
+ */
+export type StoryArt =
+  | { kind: "pokemon"; speciesId: number; caption: string }
+  | { kind: "item"; itemId: string; caption: string }
+  | { kind: "icon"; name: string };
+
 export interface StoryEvent {
   id: string;
   /** Hangi hikâye yayına ait. */
@@ -283,6 +355,17 @@ export interface StoryEvent {
   text: string;
   tone: SceneTone;
   speaker?: StorySpeaker;
+  /** Sahnede konuşan biri yerine (ya da yanında) bir nesne/yaratık resmi. */
+  art?: StoryArt;
+  /**
+   * Olayın hangi seviye bandına ait olduğu.
+   *
+   * `requirement.minAct`/`maxAct` zaten kapıyı tutuyor; bu alan DOKÜMANTASYON
+   * ve TEST için: `scripts/check-events.mts` her bandın yeterli sayıda olay
+   * taşıdığını doğruluyor, yani "geç oyunda olay kalmıyor" sorunu ölçülebilir
+   * hâle geliyor.
+   */
+  band?: StoryBand;
   /** Olayın çıkabilmesi için gereken koşullar. */
   requirement?: StoryRequirement;
   /** true ise bir kez çözüldükten sonra bir daha çıkmaz. */

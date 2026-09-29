@@ -138,6 +138,19 @@ export function describeEvent(
     case "field":
       return event.text;
 
+    /*
+     * Trainer sıradaki Pokémon'unu çıkardı.
+     *
+     * Mainline'ın kalıbı: kimin bayıldığı ve kimin geldiği aynı satırda, çünkü
+     * oyuncunun bir sonraki kararı tam olarak buna bakıyor.
+     */
+    case "enemy-switch":
+      return `${event.fromName} fainted! The trainer sent out ${event.toName}!`;
+
+    /** Boss bir faza geçti — metin fazın kendi satırı. */
+    case "boss-phase":
+      return event.text;
+
     case "fail":
       return "But it failed!";
 
@@ -180,6 +193,14 @@ export function getEventDelay(event: BattleEvent): number {
     case "substitute":
     case "field":
       return 700;
+
+    // Yeni Pokémon sahaya girerken oyuncunun onu görmesi lazım.
+    case "enemy-switch":
+      return 1100;
+
+    // Faz geçişi savaşın dönüm noktası: en uzun duraklama.
+    case "boss-phase":
+      return 1400;
     case "hp-set":
       return 300;
     default:

@@ -11,15 +11,22 @@ import { MOVE_EFFECT_SPRITES } from '../lib/data/moveEffects';
 import { POKEMON_TYPES } from '../lib/types';
 import {
   ALL_RELIC_IDS,
-  getOfferableRelics,
+  EXPECTED_RARITY_COUNTS,
+  MAX_RELIC_SLOTS,
   RELICS,
-  type RelicId,
 } from '../lib/data/relics';
+import {
+  gainRelic,
+  getOfferableRelics,
+  type RelicSlot,
+} from '../lib/game/relicSlots';
 import {
   buildBattleModifiers,
   buildRunModifiers,
+  CAPS,
   createBattleModifiers,
   getStreakMultiplier,
+  getStreakStep,
 } from '../lib/game/modifiers';
 import { getRowsToBoss, getZone, getZoneIndex } from '../lib/game/zones';
 import { getIdsWithinBstAndType, hasType } from '../lib/data/pokemonIndex';
@@ -41,36 +48,171 @@ check('Kategori yedekleri tanımlı', ['impact', 'burst', 'sparkle'].every((k) =
 check('Her sprite en az bir kareli', Object.values(MOVE_EFFECT_SPRITES).every((s) => s.frames >= 1 && s.width > 0 && s.height > 0), true);
 check('Sprite yolları /sprites/fx altında', Object.values(MOVE_EFFECT_SPRITES).every((s) => s.src.startsWith('/sprites/fx/')), true);
 
-// --- Relik kataloğu ---
+/// --- Relik kataloğu ---
 check('Relik id\'leri kendileriyle tutarlı', ALL_RELIC_IDS.every((id) => RELICS[id].id === id), true);
 check('Her reliğin açıklaması var', ALL_RELIC_IDS.every((id) => RELICS[id].description.length > 10), true);
-const nonStackable = ALL_RELIC_IDS.filter((id) => !RELICS[id].stackable);
-check('Yığılamayan relik sahipken tekrar sunulmuyor', getOfferableRelics(nonStackable).some((id) => nonStackable.includes(id)), false);
-check('Yığılabilen relik tekrar sunuluyor', getOfferableRelics(['lucky-charm']).includes('lucky-charm'), true);
+check(
+  'Her reliğin seviye metni maxLevel kadar',
+  ALL_RELIC_IDS.every(
+    (id) => RELICS[id].levelText.filter((t) => t !== undefined).length >= RELICS[id].maxLevel,
+  ),
+  true,
+);
+
+// Nadirlik dağılımı: 16 common / 8 rare / 4 epic / 2 legendary.
+for (const [rarity, expected] of Object.entries(EXPECTED_RARITY_COUNTS)) {
+  check(
+    `${rarity} relik sayısı`,
+    ALL_RELIC_IDS.filter((id) => RELICS[id].rarity === rarity).length,
+    expected,
+  );
+}
+check('Toplam relik sayısı', ALL_RELIC_IDS.length, 30);
+check(
+  'Legendary relikler tek seviyeli ve unique',
+  ALL_RELIC_IDS.filter((id) => RELICS[id].rarity === 'legendary').every(
+    (id) => RELICS[id].maxLevel === 1,
+  ),
+  true,
+);
+check(
+  'Cursed relikler gerçek bir dezavantaj taşıyor',
+  ALL_RELIC_IDS.filter((id) => RELICS[id].cursed === true).length >= 2,
+  true,
+);
+
+// --- Seviye ve slot mantığı ---
+check('Tavandaki relik tekrar sunulmuyor',
+  getOfferableRelics([{ id: 'endure-band', level: 1 }]).includes('endure-band'),
+  false,
+);
+check('Seviye 1 relik tekrar sunuluyor (yükseltmek için)',
+  getOfferableRelics([{ id: 'lucky-charm', level: 1 }]).includes('lucky-charm'),
+  true,
+);
+
+const firstGain = gainRelic([], 'keen-claw');
+check('İlk alışta yeni slot açılıyor', firstGain.kind, 'added');
+const secondGain = gainRelic([{ id: 'keen-claw', level: 1 }], 'keen-claw');
+check('Kopya relik seviye yükseltiyor', secondGain.kind, 'upgraded');
+check(
+  'Kopya relik YENİ SLOT AÇMIYOR',
+  secondGain.kind === 'upgraded' ? secondGain.slots.length : -1,
+  1,
+);
+const thirdGain = gainRelic([{ id: 'keen-claw', level: 2 }], 'keen-claw');
+check('Üçüncü alışta Seviye 3', thirdGain.kind === 'upgraded' ? thirdGain.level : -1, 3);
+const maxedGain = gainRelic([{ id: 'keen-claw', level: 3 }], 'keen-claw');
+check('Seviye 3 relik tekrar gelince telafi soruluyor', maxedGain.kind, 'maxed');
+
+// Sekiz slot dolduğunda dokuzuncu relic bir SORU üretiyor, sessizce kaybolmuyor.
+const fullSlots: RelicSlot[] = ALL_RELIC_IDS.slice(0, MAX_RELIC_SLOTS).map((id) => ({
+  id,
+  level: 1,
+}));
+const ninth = gainRelic(fullSlots, ALL_RELIC_IDS[MAX_RELIC_SLOTS]);
+check('Dokuzuncu relik slot takası soruyor', ninth.kind, 'slots-full');
+check('Slot sayısı sekizi geçmiyor', fullSlots.length, MAX_RELIC_SLOTS);
 
 // --- Savaş değiştiricileri ---
 const base = createBattleModifiers();
 check('Varsayılan değiştiriciler nötr', [base.critChanceMultiplier, base.physicalDamageMultiplier, base.damageTakenMultiplier], [1, 1, 1]);
-check('Keskin Pençe kritiği ikiye katlıyor', buildBattleModifiers(['keen-claw']).critChanceMultiplier, 2);
-check('İki Keskin Pençe üst üste biniyor', buildBattleModifiers(['keen-claw', 'keen-claw']).critChanceMultiplier, 4);
-check('Ağır Yumruk fiziksel hasarı artırıyor', buildBattleModifiers(['heavy-fist']).physicalDamageMultiplier, 1.2);
-check('Demir Kabuk alınan hasarı azaltıyor', buildBattleModifiers(['iron-shell']).damageTakenMultiplier, 0.85);
-check('Alev Çekirdeği sadece ateşi güçlendiriyor', buildBattleModifiers(['flame-core']).typeDamageMultipliers.fire, 1.35);
-check('Alev Çekirdeği suya dokunmuyor', buildBattleModifiers(['flame-core']).typeDamageMultipliers.water, undefined);
-check('Direniş Bandı bayrağı açılıyor', buildBattleModifiers(['endure-band']).endurance, true);
+
+const claw1 = buildBattleModifiers([{ id: 'keen-claw', level: 1 }]).critChanceMultiplier;
+const claw2 = buildBattleModifiers([{ id: 'keen-claw', level: 2 }]).critChanceMultiplier;
+const claw3 = buildBattleModifiers([{ id: 'keen-claw', level: 3 }]).critChanceMultiplier;
+check('Keen Claw seviyeyle büyüyor', claw3 > claw2 && claw2 > claw1, true);
+/*
+ * ARTIK ÇARPILMIYOR, TOPLANIYOR.
+ *
+ * Eskiden iki Keen Claw kritiği DÖRDE katlıyordu (2 × 2). Şimdi Seviye 2
+ * 1 + 0.4×2 = 1.8 veriyor, yani üstel değil doğrusal. Bu testin varlık sebebi
+ * o regresyonu bir daha yaşamamak.
+ */
+check('İki seviye çarpılmıyor (1.8, 4 değil)', claw2, 1.8);
+check('Ağır Yumruk fiziksel hasarı artırıyor', buildBattleModifiers([{ id: 'heavy-fist', level: 1 }]).physicalDamageMultiplier > 1, true);
+check('Demir Kabuk alınan hasarı azaltıyor', buildBattleModifiers([{ id: 'iron-shell', level: 1 }]).damageTakenMultiplier < 1, true);
+check('Direniş Bandı bayrağı açılıyor', buildBattleModifiers([{ id: 'endure-band', level: 1 }]).endurance, true);
+
+// Rozet ödülü tipe özel hasar veriyor.
+const typeEdge = buildBattleModifiers([], [
+  { id: 'type-edge', type: 'fire', badgeId: 'heat' },
+]);
+check('Rozet ödülü ateşi güçlendiriyor', (typeEdge.typeDamageMultipliers.fire ?? 1) > 1, true);
+check('Rozet ödülü suya dokunmuyor', typeEdge.typeDamageMultipliers.water, undefined);
+
+// --- Tavanlar: çarpanlar kontrolsüz büyümüyor ---
+const stacked = buildBattleModifiers(
+  [
+    { id: 'heavy-fist', level: 3 },
+    { id: 'binding-oath', level: 3 },
+    { id: 'renegade-shard', level: 1 },
+    { id: 'worn-whetstone', level: 3 },
+    { id: 'type-prism', level: 3 },
+    { id: 'gym-token', level: 3 },
+  ],
+  [{ id: 'focus', badgeId: 'x' }, { id: 'bulwark', badgeId: 'y' }],
+);
+check('Fiziksel hasar tavanı aşılmıyor', stacked.physicalDamageMultiplier <= CAPS.damageMultiplier, true);
+check('Kritik tavanı aşılmıyor', stacked.critChanceMultiplier <= CAPS.critChanceMultiplier, true);
+check(
+  'Alınan hasar tavanının altına inilmiyor',
+  buildBattleModifiers([{ id: 'iron-shell', level: 3 }], [{ id: 'bulwark', badgeId: 'z' }])
+    .damageTakenMultiplier >= CAPS.damageTakenMultiplier,
+  true,
+);
+check(
+  'Cursed relik alınan hasarı ARTIRABİLİYOR',
+  buildBattleModifiers([{ id: 'renegade-shard', level: 1 }]).damageTakenMultiplier > 1,
+  true,
+);
+check(
+  'Binding Oath tur başına can yakıyor',
+  buildBattleModifiers([{ id: 'binding-oath', level: 1 }]).turnDrainPercent > 0,
+  true,
+);
 
 // --- Koşu değiştiricileri ---
-check('Şans Tılsımı altını artırıyor', buildRunModifiers(['lucky-charm']).goldMultiplier, 1.5);
-check('Tecrübe Muskası XP\'yi artırıyor', buildRunModifiers(['exp-amulet']).xpMultiplier, 1.3);
-check('Tüccar Kartı indirim veriyor', buildRunModifiers(['merchant-card']).shopDiscount, 0.25);
-check('Twin Dice boosts post-battle healing', buildRunModifiers(['double-dice']).victoryHealBonus > 0, true);
-check('Zafer Bayrağı seri adımını iki katlıyor', buildRunModifiers(['victory-flag']).streakStep, buildRunModifiers([]).streakStep * 2);
+check('Şans Tılsımı altını artırıyor', buildRunModifiers([{ id: 'lucky-charm', level: 1 }]).goldMultiplier > 1, true);
+check('Tecrübe Muskası XP\'yi artırıyor', buildRunModifiers([{ id: 'exp-amulet', level: 1 }]).xpMultiplier > 1, true);
+check('Tüccar Kartı indirim veriyor', buildRunModifiers([{ id: 'merchant-card', level: 1 }]).shopDiscount > 0, true);
+check('Walking Stick dinlenme iyileşmesini artırıyor', buildRunModifiers([{ id: 'walking-stick', level: 1 }]).restHealBonus > 0, true);
+check('Hunter\'s Lure yakalamayı artırıyor', buildRunModifiers([{ id: 'hunters-lure', level: 1 }]).captureBonus > 0, true);
+check('Loaded Die zar modifiyeri veriyor', buildRunModifiers([{ id: 'loaded-die', level: 1 }]).checkBonus > 0, true);
+check('Altın çarpanı tavanı aşmıyor',
+  buildRunModifiers(
+    [{ id: 'lucky-charm', level: 3 }, { id: 'trainer-badge', level: 3 }],
+    [{ id: 'coin-purse', badgeId: 'a' }],
+  ).goldMultiplier <= CAPS.goldMultiplier,
+  true,
+);
+check('İndirim tavanı aşmıyor',
+  buildRunModifiers(
+    [{ id: 'merchant-card', level: 3 }, { id: 'ledger', level: 3 }],
+    [{ id: 'haggler', badgeId: 'b' }],
+  ).shopDiscount <= CAPS.shopDiscount,
+  true,
+);
+check('Yakalama bonusu tavanı aşmıyor',
+  buildRunModifiers(
+    [{ id: 'hunters-lure', level: 3 }, { id: 'spare-net', level: 3 }],
+    [{ id: 'tracker', badgeId: 'c' }],
+  ).captureBonus <= CAPS.captureBonus,
+  true,
+);
 
 // --- Galibiyet serisi ---
-const step = buildRunModifiers([]).streakStep;
+const step = getStreakStep();
 check('Serisiz çarpan 1', getStreakMultiplier(0, step), 1);
 check('Seri çarpanı artıyor', getStreakMultiplier(5, step) > getStreakMultiplier(2, step), true);
-check('Seri çarpanı 2x ile sınırlı', getStreakMultiplier(500, step), 2);
+/*
+ * Seri tavanı 2x'ten 1.4x'e indi.
+ *
+ * Sınırsız seri skorun ana kaynağı olmamalı (bkz. docs/leaderboard.md) ve 2x
+ * çarpan pratikte oyuncuyu hiç kaybetmemeye zorluyordu: tek bir yenilgi
+ * gelirin yarısını siliyordu.
+ */
+check('Seri çarpanı 1.4x ile sınırlı', getStreakMultiplier(500, step), 1.4);
 
 // --- Hasar üzerinde gerçek etki ---
 const pikachu = await getPokemon('pikachu');
@@ -85,27 +227,27 @@ const defender = createCombatant('enemy', charmander, createTeamMember(charmande
 
 const plain = calculateDamage(attacker, defender, thunderbolt, Math.random, { isCrit: false, randomFactor: 1 }).damage;
 const withCore = calculateDamage(attacker, defender, thunderbolt, Math.random, {
-  isCrit: false, randomFactor: 1, attackerModifiers: buildBattleModifiers(['storm-core']),
+  isCrit: false, randomFactor: 1, attackerModifiers: buildBattleModifiers([], [{ id: 'type-edge', type: 'electric', badgeId: 'thunder' }]),
 }).damage;
-check('Fırtına Çekirdeği elektrik hasarını artırıyor', withCore > plain, true);
-console.log(`INFO  Thunderbolt ${plain} → çekirdekle ${withCore}`);
+check('Rozet ödülü elektrik hasarını artırıyor', withCore > plain, true);
+console.log(`INFO  Thunderbolt ${plain} → rozet ödülüyle ${withCore}`);
 
 const withShell = calculateDamage(attacker, defender, thunderbolt, Math.random, {
-  isCrit: false, randomFactor: 1, defenderModifiers: buildBattleModifiers(['iron-shell']),
+  isCrit: false, randomFactor: 1, defenderModifiers: buildBattleModifiers([{ id: 'iron-shell', level: 3 }]),
 }).damage;
 check('Demir Kabuk gelen hasarı azaltıyor', withShell < plain, true);
 
 const physicalPlain = calculateDamage(attacker, defender, quickAttack, Math.random, { isCrit: false, randomFactor: 1 }).damage;
 const physicalBoosted = calculateDamage(attacker, defender, quickAttack, Math.random, {
-  isCrit: false, randomFactor: 1, attackerModifiers: buildBattleModifiers(['heavy-fist']),
+  isCrit: false, randomFactor: 1, attackerModifiers: buildBattleModifiers([{ id: 'heavy-fist', level: 3 }]),
 }).damage;
 check('Ağır Yumruk fiziksel hasarı artırıyor', physicalBoosted > physicalPlain, true);
 check('Ağır Yumruk özel hamleye dokunmuyor', calculateDamage(attacker, defender, thunderbolt, Math.random, {
-  isCrit: false, randomFactor: 1, attackerModifiers: buildBattleModifiers(['heavy-fist']),
+  isCrit: false, randomFactor: 1, attackerModifiers: buildBattleModifiers([{ id: 'heavy-fist', level: 3 }]),
 }).damage, plain);
 
 // --- Direniş Bandı savaşta ---
-function enduranceBattle(relics: RelicId[]): BattleState {
+function enduranceBattle(relics: RelicSlot[]): BattleState {
   return {
     ...startBattle({
       playerPokemon: pikachu,
@@ -126,7 +268,7 @@ function enduranceBattle(relics: RelicId[]): BattleState {
     },
   };
 }
-const endured = executeTurn(enduranceBattle(['endure-band']), { kind: 'move', move: quickAttack }, quickAttack, createRandom(3));
+const endured = executeTurn(enduranceBattle([{ id: 'endure-band', level: 1 }]), { kind: 'move', move: quickAttack }, quickAttack, createRandom(3));
 check('Direniş Bandı bayılmayı engelliyor', endured.state.player.currentHp, 1);
 check('Direniş olayı üretiliyor', endured.events.some((e) => e.kind === 'endured'), true);
 check('Direniş bir kez kullanılıyor', endured.state.enduranceUsed, true);
@@ -141,7 +283,7 @@ const regenBattle = startBattle({
   playerMember: createTeamMember(pikachu, { level: 50, moves: [growl], isShiny: false }),
   enemyPokemon: charmander,
   enemyMember: createTeamMember(charmander, { level: 50, moves: [growl], isShiny: false }),
-  playerModifiers: buildBattleModifiers(['life-stone']),
+  playerModifiers: buildBattleModifiers([{ id: 'life-stone', level: 3 }]),
 });
 const hurtRegenBattle: BattleState = {
   ...regenBattle,
@@ -161,21 +303,21 @@ check('Taşsız oyuncuda rejenerasyon yok', executeTurn(
 const member = createTeamMember(pikachu, {
   level: 20, moves: await getMoves(selectStartingMoveIds(pikachu, 20)), isShiny: false,
 });
-async function goldFrom(relics: RelicId[], streak: number) {
+async function goldFrom(relics: RelicSlot[], streak: number) {
   let total = 0;
   for (let i = 0; i < 60; i += 1) {
     const outcome = await resolveVictory({
       member, pokemon: pikachu, enemyPokemon: charmander, enemyLevel: 20,
       isBoss: false, tileIndex: 10, random: createRandom(i + 1),
       runModifiers: buildRunModifiers(relics),
-      streakMultiplier: getStreakMultiplier(streak, buildRunModifiers(relics).streakStep),
+      streakMultiplier: getStreakMultiplier(streak, getStreakStep()),
     });
     total += outcome.goldDelta;
   }
   return total;
 }
 const plainGold = await goldFrom([], 0);
-const charmGold = await goldFrom(['lucky-charm'], 0);
+const charmGold = await goldFrom([{ id: 'lucky-charm', level: 3 }], 0);
 const streakGold = await goldFrom([], 8);
 console.log(`INFO  60 savaşta altın — düz ${plainGold}, tılsımlı ${charmGold}, 8 serili ${streakGold}`);
 check('Şans Tılsımı altını büyütüyor', charmGold > plainGold, true);
@@ -188,7 +330,7 @@ const xpPlain = (await resolveVictory({
 const xpBoosted = (await resolveVictory({
   member, pokemon: pikachu, enemyPokemon: charmander, enemyLevel: 20,
   isBoss: false, tileIndex: 10, random: createRandom(4),
-  runModifiers: buildRunModifiers(['exp-amulet']),
+  runModifiers: buildRunModifiers([{ id: 'exp-amulet', level: 3 }]),
 })).xpGained;
 check('Tecrübe Muskası XP\'yi büyütüyor', xpBoosted > xpPlain, true);
 

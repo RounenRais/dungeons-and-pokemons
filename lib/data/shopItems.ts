@@ -11,13 +11,12 @@
 
 import { EVOLUTION_STONES, LINK_STONE, LINK_STONE_MIN_LEVEL } from "./items";
 import { POKE_BALLS } from "./pokeballs";
-import type { ItemCategory, Rarity, StatKey } from "@/lib/types";
+import type { ItemCategory, Rarity } from "@/lib/types";
 
 export type ItemEffect =
   | { kind: "heal"; amount: number | "full" }
   | { kind: "cure" }
   | { kind: "revive"; percent: number }
-  | { kind: "boost"; stat: StatKey; amount: number }
   | { kind: "stone"; stoneId: string }
   | { kind: "link-stone" }
   | { kind: "ball"; ballId: string }
@@ -116,25 +115,37 @@ const POTIONS: ShopItem[] = [
   },
 ];
 
-/** Stat güçlendirme eşyaları — savaş sonu ödülüyle aynı türde ama garantili. */
-const STAT_BOOSTERS: ShopItem[] = (
-  [
-    ["hp-up", "HP Up", "hp", "Max HP"],
-    ["protein", "Protein", "attack", "Attack"],
-    ["iron", "Iron", "defense", "Defense"],
-    ["calcium", "Calcium", "specialAttack", "Sp. Atk"],
-    ["zinc", "Zinc", "specialDefense", "Sp. Def"],
-    ["carbos", "Carbos", "speed", "Speed"],
-  ] as [string, string, StatKey, string][]
-).map(([id, label, stat, statLabel]) => ({
-  id,
-  label,
-  category: "stat-booster" as ItemCategory,
-  price: 625,
-  description: `${statLabel} permanently +10.`,
-  effect: { kind: "boost" as const, stat, amount: 10 },
-  usableInBattle: false,
-}));
+/*
+ * Stat güçlendirme eşyaları KALDIRILDI.
+ *
+ * ---------------------------------------------------------------------------
+ * NEDEN
+ * ---------------------------------------------------------------------------
+ * Protein/Iron/Calcium ve arkadaşları parayla kalıcı ham stat satıyordu ve bu
+ * oyunun güç eğrisini bozan tek kaynaktı: yeterince altın toplayan bir oyuncu
+ * level, evrim, hareket seti ve takım kompozisyonuna hiç bakmadan, sadece
+ * alışveriş yaparak her rakibi geçebiliyordu. Kararın yerini birikim alıyordu.
+ *
+ * Güç artık şuralardan geliyor: level, evrim, hareket seti, takım
+ * kompozisyonu, relic, rozet ödülü, riskli pact ve hikâye kararları.
+ * Ayrıntı: `docs/progression.md`.
+ *
+ * Eski kayıtlardaki boosterlar SESSİZCE YOK EDİLMİYOR — göç onları dengeli bir
+ * karşılığa çeviriyor (bkz. `lib/game/saveMigration.ts`). Aşağıdaki liste o
+ * göçün tanıması gereken kimlikleri tutuyor.
+ */
+export const LEGACY_STAT_BOOSTER_IDS: readonly string[] = [
+  "hp-up",
+  "protein",
+  "iron",
+  "calcium",
+  "zinc",
+  "carbos",
+];
+
+export function isLegacyStatBooster(itemId: string): boolean {
+  return LEGACY_STAT_BOOSTER_IDS.includes(itemId);
+}
 
 /** Poké Balls — the only route to a bigger team. */
 const BALLS: ShopItem[] = POKE_BALLS.map((ball) => ({
@@ -202,7 +213,6 @@ const CHESTS: ShopItem[] = (
 export const SHOP_CATALOG: ShopItem[] = [
   ...BALLS,
   ...POTIONS,
-  ...STAT_BOOSTERS,
   ...STONES,
   ...LINK_STONES,
   ...CHESTS,
@@ -228,9 +238,11 @@ export function getTmPrice(power: number | null, isStatus: boolean): number {
 
 export const SHOP_CATEGORY_LABELS: Record<ItemCategory, string> = {
   ball: "Poké Balls",
+  // Katalogda bu kategoride hiç eşya yok; etiket sadece eski bir kayıttan
+  // gelen envanter girdisinin bir adı olsun diye duruyor.
+  "stat-booster": "Old Supplements",
   potion: "Potions",
   "status-heal": "Potions",
-  "stat-booster": "Boosters",
   "evolution-stone": "Stones",
   tm: "TMs",
   chest: "Cases",

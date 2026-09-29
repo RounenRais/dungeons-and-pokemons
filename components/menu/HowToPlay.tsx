@@ -24,7 +24,7 @@ import {
   STARTER_LEVEL,
   STARTERS,
 } from "@/lib/data/starters";
-import { getCatchChance } from "@/lib/game/catching";
+import { computePostBattleCatchOdds } from "@/lib/game/catching";
 import {
   NODE_DESCRIPTIONS,
   NODE_LABELS,
@@ -39,15 +39,29 @@ const EXAMPLE_CAPTURE_RATE = 45;
 const SPRITE_BASE =
   "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon";
 
+/*
+ * Kılavuzdaki düğüm listesi HER düğüm tipini içermek zorunda.
+ *
+ * `scripts/check-guide.mts` bunu `NODE_LABELS` ile karşılaştırıyor: yeni bir
+ * düğüm tipi eklenip kılavuza yazılmazsa test kırılıyor. Oyuna bir düğüm
+ * eklemek ama oyuncuya ne olduğunu söylememek tam olarak engellemek istediğimiz
+ * şey.
+ *
+ * Sıra oyuncunun onlarla karşılaşma sırası: yoldaki rutin duraklar önce,
+ * act'in doruk noktaları sonra.
+ */
 const NODE_ORDER: MapNodeType[] = [
   "BATTLE",
+  "TRAINER_BATTLE",
   "ELITE",
   "EVENT",
   "CHEST",
   "SHOP",
   "REST",
   "CASINO",
+  "GYM",
   "BOSS",
+  "LEAGUE",
 ];
 
 const SHOWN_RELICS: RelicId[] = [
@@ -131,20 +145,20 @@ export function HowToPlay({ onBack, backLabel = "Back" }: HowToPlayProps) {
           last.
         </Chapter>
 
-        <Chapter number={7} title="Catching bosses" figure={<BallFigure />}>
-          Only bosses can be caught, and only after you beat them. Throw a ball
-          and the odds depend on which one — buy them at any shop before you
-          need them. A caught boss joins your team, up to six. EXP Share is on
-          from the start, so a fresh catch earns half the EXP of every battle
-          without having to fight one; switch it off in the team panel if you
-          would rather funnel it all into the Pokémon on the field.
+        <Chapter number={7} title="Catching wild Pokémon" figure={<BallFigure />}>
+          <span>
+            Defeat a wild Pokémon to subdue it, then choose one ball or leave.
+            Each encounter allows one throw. A caught Pokémon joins your party;
+            when all six slots are occupied, it goes to the Box. Trainer-owned
+            Pokémon cannot be caught.
+          </span>
         </Chapter>
 
         <Chapter number={8} title="Coins and rests" figure={<ShopFigure />}>
           Coins come from wins, chests and events. Shops sell balls, potions,
-          stat boosters, evolution stones and TMs. At a campfire you get one
-          thing only: heal the team by {REST_HEAL_PERCENT}%, train for a
-          permanent stat boost, or talk to whoever is sitting there.
+          healing supplies, evolution stones and TMs. At a campfire you can
+          heal the team by {REST_HEAL_PERCENT}% or talk to whoever is sitting
+          there.
         </Chapter>
 
         <Chapter number={9} title="Unknown stops" figure={<EventFigure />}>
@@ -445,7 +459,18 @@ function BallFigure() {
     <Figure>
       <ul className="w-full space-y-1 px-1">
         {POKE_BALLS.map((ball) => {
-          const chance = getCatchChance(EXAMPLE_CAPTURE_RATE, ball.multiplier);
+          const chance = computePostBattleCatchOdds({
+            speciesId: 147,
+            level: 30,
+            baseCatchRate: EXAMPLE_CAPTURE_RATE,
+            rarityTier: "rare",
+            encounterAct: 2,
+            ballId: ball.id,
+            isWild: true,
+            isSubdued: true,
+            attemptUsed: false,
+            ballQuantity: 1,
+          }).chance;
           return (
             <li key={ball.id} className="flex items-center gap-2">
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -469,7 +494,7 @@ function BallFigure() {
 }
 
 function ShopFigure() {
-  const items = ["potion", "full-heal", "protein", "fire-stone"];
+  const items = ["potion", "full-heal", "great-ball", "fire-stone"];
   return (
     <Figure>
       <div className="flex flex-col items-center gap-2">

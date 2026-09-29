@@ -1,56 +1,72 @@
 // Skor tablosunun istemci tarafı.
 //
 // ---------------------------------------------------------------------------
-// İKİ KATMAN
+// ÜÇ DURUM, ÜÇ FARKLI SÖZ
 // ---------------------------------------------------------------------------
-// 1. GLOBAL: `/api/leaderboard` üzerinden paylaşılan tablo — bütün oyuncular
-//    aynı listede yarışıyor. Sunucu tarafı ve kurulumu için bkz.
-//    `app/api/leaderboard/route.ts`.
-// 2. YEREL AYNA: localStorage. Sadece bir yedek değil, aynı zamanda çevrimdışı
-//    ve "backend kurulmamış" hâlinde oyunun çalışmaya devam etmesinin yolu.
+// 1. `global`       — `/api/leaderboard` yanıt verdi: bütün oyuncular aynı
+//                     listede. Arayüz "everyone" yazıyor.
+// 2. `local`        — tablo KURULU ama şu an okunamadı (ağ yok, veritabanı
+//                     düştü). Cihazdaki ayna gösteriliyor ve arayüz "this
+//                     device" yazıyor.
+// 3. `unconfigured` — dağıtımda hiç tablo yok. Cihazdaki ayna gösterilebilir
+//                     ama HERKESE AÇIK TABLO GİBİ SUNULMUYOR; arayüz bunu
+//                     açıkça söylüyor.
 //
-// Her koşu İKİSİNE de yazılıyor. Global tablo okunabiliyorsa o gösteriliyor;
-// okunamıyorsa (anahtar yok, ağ yok, Supabase düştü) sessizce yerel aynaya
-// düşülüyor ve arayüz bunu bir satırla söylüyor. Hiçbir durumda oyun
-// "tablo yüklenemedi" diye bir yerde durmuyor.
+// Üçüncü durumun ayrı olması şart: localStorage'daki bir listeyi "leaderboard"
+// diye göstermek oyuncuya yalan söylemek olur — o liste başka kimseye
+// görünmüyor.
 
 import {
   compareEntries,
   createRunId,
-  isValidName,
   LEADERBOARD_PAGE_SIZE,
   LOCAL_LEADERBOARD_SIZE,
-  normaliseName,
   parseEntries,
+  toEntry,
+  validateName,
   type LeaderboardEntry,
-  type RunSubmission,
+  type RunSummary,
+  type RunTicket,
 } from "./leaderboardSchema";
 
 export {
+  computeRunScore,
+  LEADERBOARD_MORE_SIZE,
   LEADERBOARD_PAGE_SIZE,
   LOCAL_LEADERBOARD_SIZE,
   MAX_NAME_LENGTH,
   MIN_NAME_LENGTH,
+  NAME_MESSAGES,
   isValidName,
   normaliseName,
+  validateName,
 } from "./leaderboardSchema";
-export type { LeaderboardEntry, RunSubmission } from "./leaderboardSchema";
+export type {
+  LeaderboardEntry,
+  RunSummary,
+  RunSubmission,
+  RunTicket,
+} from "./leaderboardSchema";
 
-/**
- * Eski adın devamı: bazı ekranlar "en iyi N" derken bu sayıyı yazıyor.
- * Artık global sayfa boyutu.
- */
+/** Eski adın devamı: bazı ekranlar "en iyi N" derken bu sayıyı yazıyor. */
 export const LEADERBOARD_SIZE = LEADERBOARD_PAGE_SIZE;
 
 const STORAGE_KEY = "pokerun:leaderboard";
 const API_PATH = "/api/leaderboard";
+const TICKET_PATH = "/api/leaderboard/run";
 
 /** Tablonun nereden geldiği — arayüz bunu oyuncuya söylüyor. */
-export type LeaderboardSource = "global" | "local";
+export type LeaderboardSource = "global" | "local" | "unconfigured";
 
 export interface LeaderboardView {
   entries: LeaderboardEntry[];
   source: LeaderboardSource;
+  /** Sunucudaki toplam satır sayısı (yerel listede listenin boyu). */
+  total: number;
+  /** Daha çekilecek satır var mı? */
+  hasMore: boolean;
+  /** Sunucudan gelen açıklama — kurulu değilse arayüz bunu gösteriyor. */
+  message: string | null;
 }
 
 // --- Yerel ayna ------------------------------------------------------------
@@ -79,11 +95,79 @@ function writeLeaderboard(entries: LeaderboardEntry[]): void {
 
 /** Bir koşuyu yerel aynaya ekler ve yeni aynayı döner. */
 function appendLocal(entry: LeaderboardEntry): LeaderboardEntry[] {
-  const next = [...readLeaderboard(), entry]
+  const existing = readLeaderboard().filter((row) => row.id !== entry.id);
+  const next = [...existing, entry]
     .sort(compareEntries)
     .slice(0, LOCAL_LEADERBOARD_SIZE);
   writeLeaderboard(next);
   return next;
+}
+
+function localView(
+  source: Exclude<LeaderboardSource, "global">,
+  message: string | null,
+  entries: LeaderboardEntry[] = readLeaderboard(),
+): LeaderboardView {
+  return {
+    entries,
+    source,
+    total: entries.length,
+    hasMore: false,
+    message,
+  };
+}
+
+// --- Koşu bileti -----------------------------------------------------------
+
+interface TicketPayload {
+  configured?: boolean;
+  ticket?: unknown;
+  secret?: unknown;
+  message?: unknown;
+}
+
+function isTicket(raw: unknown): raw is RunTicket {
+  if (typeof raw !== "object" || raw === null) return false;
+  const ticket = raw as Partial<RunTicket>;
+  return (
+    typeof ticket.runId === "string" &&
+    typeof ticket.seed === "number" &&
+    typeof ticket.issuedAt === "number" &&
+    typeof ticket.signature === "string"
+  );
+}
+
+/**
+ * Koşu başlarken sunucudan bilet ister.
+ *
+ * Bilet alınamazsa `null` dönüyor ve koşu biletsiz başlıyor: oyun tamamen
+ * oynanabilir, sadece herkese açık tabloya yazılamıyor. Arayüz bunu koşu
+ * sonunda söylüyor, başında oyuncuyu meşgul etmiyor.
+ */
+export async function requestRunTicket(): Promise<RunTicket | null> {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const response = await fetch(TICKET_PATH, {
+      method: "POST",
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+
+    const payload = (await response.json()) as TicketPayload;
+    if (payload.configured !== true || !isTicket(payload.ticket)) return null;
+
+    if (payload.secret === "ephemeral") {
+      // Sadece geliştiriciye: production'da LEADERBOARD_SECRET tanımlanmalı.
+      console.warn(
+        "[leaderboard] The server is signing run tickets with a per-process key. " +
+          "Set LEADERBOARD_SECRET so tickets survive a restart.",
+      );
+    }
+    return payload.ticket;
+  } catch {
+    return null;
+  }
 }
 
 // --- Global tablo ----------------------------------------------------------
@@ -92,101 +176,202 @@ interface ApiPayload {
   configured?: boolean;
   entries?: unknown;
   entry?: unknown;
+  total?: unknown;
+  hasMore?: unknown;
+  duplicate?: unknown;
+  message?: unknown;
+  error?: unknown;
+  problems?: unknown;
+}
+
+function readNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : fallback;
+}
+
+function readMessage(payload: ApiPayload): string | null {
+  if (typeof payload.message === "string") return payload.message;
+  if (typeof payload.error === "string") return payload.error;
+  return null;
 }
 
 /**
- * Global tabloyu okur; erişilemezse yerel aynayı döner.
+ * Global tabloyu okur; erişilemezse yerel aynaya düşer.
  *
- * `source` alanı hangisinin döndüğünü söylüyor, böylece arayüz "bu liste
- * sadece bu cihazdan" diye dürüst olabiliyor.
+ * `offset` verilirse "daha fazla göster" için sonraki sayfa çekiliyor. Yerel
+ * aynada sayfalama yok (en fazla 50 satır), o yüzden ilk sayfadan sonrası boş
+ * dönüyor.
  */
-export async function fetchLeaderboard(): Promise<LeaderboardView> {
-  const local = readLeaderboard();
-  if (typeof window === "undefined") return { entries: local, source: "local" };
+export async function fetchLeaderboard(
+  offset = 0,
+  limit = LEADERBOARD_PAGE_SIZE,
+): Promise<LeaderboardView> {
+  if (typeof window === "undefined") {
+    return localView("unconfigured", null, []);
+  }
 
   try {
-    const response = await fetch(API_PATH, { cache: "no-store" });
-    if (!response.ok) return { entries: local, source: "local" };
-
-    const payload = (await response.json()) as ApiPayload;
-    if (payload.configured !== true) return { entries: local, source: "local" };
-
-    const entries = parseEntries(payload.entries).slice(
-      0,
-      LEADERBOARD_PAGE_SIZE,
+    const response = await fetch(
+      `${API_PATH}?limit=${limit}&offset=${offset}`,
+      { cache: "no-store" },
     );
-    return { entries, source: "global" };
+    const payload = (await response.json()) as ApiPayload;
+
+    // Tablo hiç kurulu değil: cihazdaki liste "herkese açık" diye SUNULMUYOR.
+    if (payload.configured !== true) {
+      return localView(
+        "unconfigured",
+        readMessage(payload) ??
+          "The public leaderboard is not set up on this deployment.",
+        offset === 0 ? readLeaderboard() : [],
+      );
+    }
+
+    if (!response.ok) {
+      // Tablo kurulu ama şu an okunamadı: ayna gösteriliyor, sebebi yazıyor.
+      return localView(
+        "local",
+        readMessage(payload) ?? "The leaderboard could not be read right now.",
+        offset === 0 ? readLeaderboard() : [],
+      );
+    }
+
+    const entries = parseEntries(payload.entries);
+    return {
+      entries,
+      source: "global",
+      total: readNumber(payload.total, entries.length),
+      hasMore:
+        payload.hasMore === true ||
+        offset + entries.length < readNumber(payload.total, 0),
+      message: null,
+    };
   } catch {
     // Ağ yok ya da route hiç yok (statik export): yerel ayna yeterli.
-    return { entries: local, source: "local" };
+    return localView(
+      "local",
+      "Offline — showing the runs saved on this device.",
+      offset === 0 ? readLeaderboard() : [],
+    );
   }
+}
+
+export interface SubmitResult extends LeaderboardView {
+  /** Az önce yazılan satır — menüde vurgulanıyor. */
+  entry: LeaderboardEntry | null;
+  /** Herkese açık tabloya gerçekten yazıldı mı? */
+  recorded: boolean;
+  /** Aynı koşu daha önce gönderilmişti. */
+  duplicate: boolean;
+  /** Yazılamadıysa sebebi — arayüz bunu gösteriyor. */
+  rejection: string | null;
 }
 
 /**
  * Bir koşuyu tabloya yazar.
  *
  * `name` null ise (oyuncu adı atladı) hiçbir şey yazılmaz — atlamanın anlamı
- * tam olarak bu. Koşu HER ZAMAN yerel aynaya da yazılıyor: global yazma
- * başarısız olsa bile oyuncu kendi koşusunu görüyor.
+ * tam olarak bu. `ticket` null ise koşu sunucusuz başlamış demek: yerel aynaya
+ * yazılıyor ama herkese açık tabloya gönderilmiyor.
+ *
+ * Koşu HER ZAMAN yerel aynaya yazılıyor, böylece oyuncu kendi koşusunu global
+ * tablo çalışmasa bile görüyor.
  */
 export async function submitRun(
   name: string | null,
-  run: RunSubmission,
-): Promise<LeaderboardView & { entry: LeaderboardEntry | null }> {
-  if (name === null || !isValidName(name)) {
+  run: RunSummary,
+  ticket: RunTicket | null,
+): Promise<SubmitResult> {
+  const nameCheck = validateName(name ?? "");
+  if (name === null || !nameCheck.ok) {
     const view = await fetchLeaderboard();
-    return { ...view, entry: null };
+    return {
+      ...view,
+      entry: null,
+      recorded: false,
+      duplicate: false,
+      rejection:
+        name === null
+          ? null
+          : (nameCheck.message ?? "This name cannot be recorded."),
+    };
   }
 
-  const entry: LeaderboardEntry = {
-    id: createRunId(),
-    name: normaliseName(name),
-    depth: run.depth,
-    bestLevel: run.bestLevel,
-    bossesDefeated: run.bossesDefeated,
-    finishedAt: Date.now(),
-  };
-
+  // Yerel satır bileti varsa onun kimliğini kullanıyor: aynı koşu iki listede
+  // aynı kimlikle duruyor, yani vurgulanan satır ikisinde de aynı.
+  const entry = toEntry(ticket?.runId ?? createRunId(), nameCheck.name, run);
   const localEntries = appendLocal(entry);
+
+  if (ticket === null) {
+    return {
+      ...localView(
+        "unconfigured",
+        "This run was not ranked: the server did not issue a run ticket when it started.",
+        localEntries,
+      ),
+      entry,
+      recorded: false,
+      duplicate: false,
+      rejection:
+        "This run was not ranked: the server did not issue a run ticket when it started.",
+    };
+  }
 
   try {
     const response = await fetch(API_PATH, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: entry.name, run }),
+      body: JSON.stringify({ name: nameCheck.name, run, ticket }),
     });
-    if (!response.ok) {
-      return { entries: localEntries, source: "local", entry };
-    }
-
     const payload = (await response.json()) as ApiPayload;
-    if (payload.configured !== true) {
-      return { entries: localEntries, source: "local", entry };
+
+    if (payload.configured === false) {
+      return {
+        ...localView("unconfigured", readMessage(payload), localEntries),
+        entry,
+        recorded: false,
+        duplicate: false,
+        rejection: readMessage(payload),
+      };
     }
 
-    // Sunucu kendi kimliğini üretiyor; vurgulanacak satır o olmalı.
-    const serverEntry = parseEntries([payload.entry])[0] ?? entry;
-    const entries = parseEntries(payload.entries).slice(
-      0,
-      LEADERBOARD_PAGE_SIZE,
-    );
-    return { entries, source: "global", entry: serverEntry };
-  } catch {
-    return { entries: localEntries, source: "local", entry };
-  }
-}
+    if (!response.ok) {
+      return {
+        ...localView("local", readMessage(payload), localEntries),
+        entry,
+        recorded: false,
+        duplicate: false,
+        rejection: readMessage(payload) ?? "The run could not be recorded.",
+      };
+    }
 
-/**
- * Bu koşu gösterilen tabloya girer mi? (Girmeyecekse "kaydedildi" demeyelim.)
- *
- * Global tabloda sayfa 100 satır olduğu için pratikte hemen her koşu giriyor;
- * kontrol yine de duruyor, çünkü tablo dolduğunda yanlış bir söz vermemek
- * gerekiyor.
- */
-export function qualifiesForLeaderboard(
-  depth: number,
-  entries: readonly LeaderboardEntry[] = readLeaderboard(),
-): boolean {
-  if (entries.length < LEADERBOARD_PAGE_SIZE) return true;
-  return depth > entries[entries.length - 1].depth;
+    // Sunucu puanı kendisi hesaplıyor; vurgulanacak satır onun döndürdüğü olmalı.
+    const serverEntry = parseEntries([payload.entry])[0] ?? entry;
+    const entries = parseEntries(payload.entries);
+
+    return {
+      entries,
+      source: "global",
+      total: readNumber(payload.total, entries.length),
+      hasMore: payload.hasMore === true,
+      message: null,
+      entry: serverEntry,
+      recorded: true,
+      duplicate: payload.duplicate === true,
+      rejection: null,
+    };
+  } catch {
+    return {
+      ...localView(
+        "local",
+        "Offline — the run is saved on this device and was not ranked.",
+        localEntries,
+      ),
+      entry,
+      recorded: false,
+      duplicate: false,
+      rejection: "Offline — the run could not be sent to the leaderboard.",
+    };
+  }
 }

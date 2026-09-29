@@ -32,11 +32,17 @@
     "smoke:boss": "npx --yes tsx scripts/smoke-boss.mts",
     "smoke:moves": "npx --yes tsx scripts/smoke-moves.mts",
     "smoke:leaderboard": "npx --yes tsx scripts/smoke-leaderboard.mts",
-    "check:leaderboard-api": "npx --yes tsx scripts/check-leaderboard-api.mts"
+    "check:leaderboard-api": "npx --yes tsx scripts/check-leaderboard-api.mts",
+    "check:map": "npx --yes tsx scripts/check-map-wild.mts",
+    "check:catching": "npx --yes tsx scripts/check-catching.mts",
+    "check:trainers": "npx --yes tsx scripts/check-trainer-battles.mts",
+    "smoke:full-run": "npx --yes tsx scripts/smoke-full-run.mts"
   },
   "dependencies": {
+    "@types/pg": "^8.23.1",
     "framer-motion": "^13.2.0",
     "next": "16.3.5",
+    "pg": "^8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "zustand": "^5.0.15"

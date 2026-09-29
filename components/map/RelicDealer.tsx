@@ -10,12 +10,14 @@ import { GameIcon } from "@/components/icons/GameIcons";
 import { motion } from "framer-motion";
 import { RARITY_COLORS, RARITY_LABELS } from "@/lib/data/rarity";
 import { getRelic, type RelicId } from "@/lib/data/relics";
+import type { RelicSlot } from "@/lib/game/relicSlots";
 import { RELIC_PRICES } from "@/lib/game/campVisitors";
 
 interface RelicDealerProps {
   /** Satıştaki relicler. */
   stock: RelicId[];
-  owned: RelicId[];
+  /** Oyuncunun relikleri ve seviyeleri — tezgahta seviye gösteriliyor. */
+  owned: RelicSlot[];
   gold: number;
   onBuy: (id: RelicId, price: number) => void;
   onLeave: () => void;
@@ -61,7 +63,9 @@ export function RelicDealer({
             const relic = getRelic(id);
             const price = getRelicPrice(id);
             const color = RARITY_COLORS[relic.rarity];
-            const count = owned.filter((entry) => entry === id).length;
+            // Kopya relic artık adet değil SEVİYE: tezgahta "kaç tane var"
+            // değil "kaçıncı seviyede" yazıyor.
+            const level = owned.find((entry) => entry.id === id)?.level ?? 0;
             const tooPoor = gold < price;
 
             return (
@@ -88,9 +92,9 @@ export function RelicDealer({
                       >
                         {RARITY_LABELS[relic.rarity]}
                       </span>
-                      {count > 0 && (
+                      {level > 0 && (
                         <span className="text-[10px] text-[var(--ink-faint)]">
-                          you have {count}
+                          yours is Lv {level} → {Math.min(relic.maxLevel, level + 1)}
                         </span>
                       )}
                     </div>

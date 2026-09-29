@@ -12,6 +12,8 @@ import type {
   StageKey,
   TeamMember,
 } from "@/lib/types";
+import type { AiProfileId } from "./aiProfiles";
+import type { BossPhase } from "@/lib/data/bossPhases";
 import type { FieldState, SideState } from "./field";
 import type { VolatileState } from "./volatile";
 
@@ -45,6 +47,58 @@ export interface Combatant {
 
 export type BattleOutcome = "ongoing" | "win" | "loss";
 
+export type WildBattleResolution =
+  | "fighting"
+  | "subdued"
+  | "capture-choice"
+  | "capture-success"
+  | "capture-failed"
+  | "released"
+  | "completed";
+
+export interface CaptureResolutionState {
+  encounterId: string;
+  phase: WildBattleResolution;
+  attemptUsed: boolean;
+  selectedBallId?: string;
+  resultApplied: boolean;
+  capturedPokemonInstanceId?: string;
+  storageDestination?: "team" | "box" | "full";
+}
+
+/**
+ * Trainer'ın sahaya henüz çıkmamış bir Pokémon'u.
+ *
+ * Savaş state'inin içinde duruyor (ayrı bir yerde değil) çünkü kayıt tek bir
+ * blok: sayfayı yarıda yenileyen bir oyuncu trainer'ın kalan kadrosunu da
+ * geri yüklüyor. Aksi hâlde yenilenmiş bir savaşta trainer'ın altı
+ * Pokémon'undan geriye biri kalırdı.
+ */
+export interface EnemyReserve {
+  pokemon: Pokemon;
+  member: TeamMember;
+}
+
+/**
+ * Trainer kimliği savaş state'inin parçasıdır.
+ *
+ * Sonuç ekranında trainer'ı `seen` listesinin son elemanından tahmin etmek
+ * save/reload ve üst üste açılan karşılaşmalarda yanlış kişiyi gösterebiliyordu.
+ * Bu küçük, JSON-uyumlu özet savaşla birlikte atomik olarak saklanır.
+ */
+export interface TrainerBattleMeta {
+  sourceId: string;
+  name: string;
+  title: string;
+  spriteId: string;
+  teamSize: number;
+  dialogue: {
+    intro: string;
+    defeat: string;
+    victory: string;
+  };
+}
+
 export interface BattleState {
   player: Combatant;
   enemy: Combatant;
@@ -70,6 +124,52 @@ export interface BattleState {
    * 0 = vahşi bir Pokémon gibi rastgele, 1 = elinden gelenin en iyisi.
    */
   enemySkill: number;
+  /**
+   * Düşmanın oynama biçimi. Eski kayıtlarda yok; AI o zaman ustalıktan
+   * varsayılanı türetiyor (bkz. `getDefaultProfile`).
+   */
+  enemyProfile?: AiProfileId;
+  /**
+   * Trainer'ın sahaya çıkmamış Pokémon'ları, çıkış sırasıyla.
+   *
+   * Boşsa savaş tek-vs-tek: düşman bayıldığında savaş biter. Doluysa
+   * bayılan Pokémon'un yerine sıradaki geliyor ve savaş sürüyor.
+   */
+  enemyTeam: EnemyReserve[];
+  /**
+   * Bu bir trainer savaşı mı?
+   *
+   * Yakalama seçeneğini kapatan ASIL alan bu değil (`catchable` o) ama
+   * arayüzün tonunu belirliyor: trainer savaşında "vahşi Pokémon kaçtı" gibi
+   * satırlar anlamsız.
+   */
+  isTrainerBattle: boolean;
+  /** Trainer savaşıysa karşılaşmanın kalıcı kimliği; legacy save'lerde yoktur. */
+  trainer?: TrainerBattleMeta;
+  /**
+   * Efsanevi boss'un faz tanımları (bkz. `lib/data/bossPhases.ts`).
+   *
+   * Boşsa faz yok. Tek Pokémon'luk boss'ları HP şişirmek yerine fazlarla
+   * zorlaştırıyoruz: savaşın ortasında soru değişiyor.
+   */
+  bossPhases: BossPhase[];
+  /** Kaç faz tetiklendi — her faz bir kez çalışıyor. */
+  bossPhaseIndex: number;
+  /**
+   * Sahadaki düşmana top atılabilir mi?
+   *
+   * Tek kaynak: hem savaş ekranı hem savaş sonu akışı buna bakıyor, yani
+   * "arayüzde görünüyor ama işlemiyor" ya da tersi bir durum oluşmuyor.
+   * Trainer'ın Pokémon'ları, Gym Leader, Elite Four, Champion ve vahşi
+   * işaretlenmemiş hikâye boss'ları için false.
+   */
+  catchable: boolean;
+  /** Arena ilk kurulduğunda seçilir; rakip değişince değişmez. */
+  arenaSeed?: number;
+  /** Wild savaşın tek-atımlık, save edilebilir sonuç durumu. */
+  captureResolution?: CaptureResolutionState;
+  /** Trainer giriş animasyonu tamamlandı mı? Reload sonrası tekrar oynatılmaz. */
+  trainerIntroComplete?: boolean;
 }
 
 /** Bir hamlenin engellenme sebebi. */
@@ -138,6 +238,23 @@ export type BattleEvent =
     }
   | { kind: "item-used"; side: Side; label: string }
   | { kind: "switch"; fromName: string; toName: string }
+  /**
+   * Trainer bayılan Pokémon'unun yerine sıradakini çıkardı.
+   *
+   * `toHp` ve `toMaxHp` taşınıyor ki arayüz HP barını olay oynarken
+   * güncelleyebilsin — aksi hâlde bar, turun sonundaki yeniden eşitlemeye kadar
+   * bayılmış Pokémon'un sıfırını gösteriyor.
+   */
+  | {
+      kind: "enemy-switch";
+      fromName: string;
+      toName: string;
+      remaining: number;
+      toHp: number;
+      toMaxHp: number;
+    }
+  /** Boss bir faza geçti. */
+  | { kind: "boss-phase"; label: string; text: string }
   | { kind: "endured"; side: Side }
   | { kind: "regen"; side: Side; amount: number; newHp: number }
   | { kind: "must-switch" }

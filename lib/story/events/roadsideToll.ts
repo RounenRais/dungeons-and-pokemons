@@ -26,6 +26,7 @@ export const TOLL_TRAINER_ID = "r1c0";
 
 export const roadsideToll: StoryEvent = {
   id: "roadside-toll",
+  band: "intro",
   arc: "roadside",
   title: "The Toll",
   tone: "tense",
@@ -159,6 +160,7 @@ export const roadsideToll: StoryEvent = {
  */
 export const roadsideTollRepaid: StoryEvent = {
   id: "roadside-toll-repaid",
+  band: "intro",
   arc: "roadside",
   title: "Same Man, Different Road",
   tone: "warm",

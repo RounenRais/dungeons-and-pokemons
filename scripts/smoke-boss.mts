@@ -50,7 +50,7 @@ function standOnBoss(revives: number, visitedRest = false) {
     deepestDepth: 12,
     battle: null,
     relics: [],
-    pendingRelics: null,
+    relicPrompt: null,
     winStreak: 3,
     bossesDefeated: 0,
     player: {
@@ -125,16 +125,23 @@ const store = useGameStore.getState();
 store.registerWin(true);
 store.endBattle();
 store.offerRelics();
-check('relic seçimi sunuluyor', (useGameStore.getState().pendingRelics ?? []).length > 0, true);
+const offered = useGameStore.getState().relicPrompt;
+check(
+  'relic seçimi sunuluyor',
+  offered !== null && offered.kind === 'offer' && offered.options.length > 0,
+  true,
+);
 store.advanceAct();
 const after = useGameStore.getState();
 check('act ilerledi', after.act, 1);
 check('yeni harita üretildi', after.map !== null, true);
 check('yeni haritada düğüm seçilmemiş', after.currentNodeId, null);
 check('yeni act kontrol noktasını sıfırlıyor', after.lastRestNodeId, null);
+// Relic teklifi act ilerlemesinden BAĞIMSIZ: oyuncu seçimini yapana kadar
+// açık kalıyor, yoksa yeni haritaya geçince ödülü kaybediyordu.
 check(
-  'act ilerleyince relic seçimi kayboluyor mu?',
-  (after.pendingRelics ?? []).length > 0,
+  'act ilerlese de relic seçimi açık kalıyor',
+  after.relicPrompt !== null,
   true,
 );
 check('faz haritada', after.phase, 'board');

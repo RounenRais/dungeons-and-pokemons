@@ -12,7 +12,7 @@ import {
 import { rollReward, type Reward } from "./rewards";
 import { createRunModifiers, type RunModifiers } from "./modifiers";
 import { calculateMaxHp } from "./stats";
-import { createTeamMember, MAX_TEAM_SIZE } from "./team";
+import { createTeamMember } from "./team";
 import type { RandomFn } from "./rng";
 import {
   findAutomaticEvolution,
@@ -21,7 +21,20 @@ import {
   getPokemonForSpecies,
   getSpecies,
 } from "@/lib/pokeapi";
-import type { BaseStats, Move, Pokemon, TeamMember } from "@/lib/types";
+import {
+  FALLBACK_CAPTURE_RATE,
+  getCaptureRarityTier,
+  type CaptureRarityTier,
+} from "./catching";
+import { MAP_ROWS } from "./map";
+import type { CaptureResolutionState } from "@/lib/battle";
+import type {
+  BaseStats,
+  GrowthRate,
+  Move,
+  Pokemon,
+  TeamMember,
+} from "@/lib/types";
 
 /**
  * Zaferden sonra geri gelen max HP yüzdesi.
@@ -49,12 +62,28 @@ export interface EvolutionOutcome {
   to: Pokemon;
 }
 
-/** A boss you are allowed to throw balls at after winning. */
+/**
+ * Top atılabilecek bir hedef.
+ *
+ * ---------------------------------------------------------------------------
+ * SADECE SAVAŞ SONRASI
+ * ---------------------------------------------------------------------------
+ * Her yakalanabilir vahşi savaşta kurulur. Hedef yenilip `subdued` olmadan
+ * kullanılamaz; savaş içi HP ve status yakalama hesabına taşınmaz.
+ */
 export interface CatchTarget {
   pokemon: Pokemon;
+  /** Yakalanırsa takıma/Box'a girecek üye (tam HP, kendi hamleleri). */
   member: TeamMember;
   /** Species capture rate from PokeAPI (3 = legendary-tier, 255 = trivial). */
   captureRate: number;
+  /** Species rarity and run position drive the post-battle formula. */
+  rarityTier: CaptureRarityTier;
+  encounterAct: number;
+  isSubdued: boolean;
+  attemptUsed: boolean;
+  /** Yakalanabilir mi? Trainer'ın Pokémon'unda ve hikâye boss'larında false. */
+  catchable: boolean;
 }
 
 export interface VictoryOutcome {
@@ -109,9 +138,16 @@ export interface ResolveVictoryArgs {
   enemyLevel: number;
   isBoss: boolean;
   tileIndex: number;
-  /** Boss yakalama için gerekir; verilmezse yakalama denenmez. */
+  /** Yakalama için gerekir; verilmezse yakalama denenmez. */
   enemyMember?: TeamMember;
-  /** Takım doluysa yakalama olmaz. */
+  /**
+   * Hedef yakalanabilir mi? Savaş state'inin `catchable` alanı.
+   * Verilmezse yakalama hedefi hiç kurulmuyor.
+   */
+  catchable?: boolean;
+  /** Atomik tek-atış durumunun save'deki karşılığı. */
+  captureResolution?: CaptureResolutionState;
+  /** Takım büyüklüğü — artık yakalamayı engellemiyor, sadece bilgi. */
   teamSize?: number;
   /**
    * EXP Share'in pay dağıtacağı DİĞER takım üyeleri (savaşan üye hariç).
@@ -124,25 +160,52 @@ export interface ResolveVictoryArgs {
 }
 
 /**
- * Builds the catchable copy of a defeated boss (full HP, its own moves).
- * Whether it is actually caught is decided later, ball by ball.
+ * Builds a subdued wild target. One later choice either throws exactly one
+ * ball or releases it; the fight itself never exposes a catch action.
  */
 async function buildCatchTarget(
   args: ResolveVictoryArgs,
 ): Promise<CatchTarget | null> {
-  if (!args.isBoss) return null;
+  // Yakalanabilirlik savaş state'inden geliyor; burada tahmin edilmiyor.
+  if (args.catchable !== true) return null;
   if (args.enemyMember === undefined) return null;
-  if ((args.teamSize ?? MAX_TEAM_SIZE) >= MAX_TEAM_SIZE) return null;
 
-  const species = await getSpecies(args.enemyPokemon.speciesId);
+  /*
+   * Takım dolu olsa bile hedef KURULUYOR.
+   *
+   * Eskiden takım doluyken `null` dönüyordu, yani oyuncuya yakalama seçeneği
+   * hiç gösterilmiyordu. Artık Box var: takım doluysa yakalanan Pokémon oraya
+   * gidiyor (bkz. `lib/game/box.ts`). Yakalama fırsatını takım büyüklüğü
+   * yüzünden kapatmak, Box'ın varlık sebebini ortadan kaldırırdı.
+   */
+  let captureRate = FALLBACK_CAPTURE_RATE;
+  let growthRate: GrowthRate = "medium-slow";
+  try {
+    const species = await getSpecies(args.enemyPokemon.speciesId);
+    captureRate = species.captureRate;
+    growthRate = species.growthRate;
+  } catch {
+    // Tür verisi çekilemedi: güvenli bir varsayılanla devam ediyoruz. API
+    // hatasının bir Pokémon'u yakalanamaz yapması kabul edilemez.
+  }
+
   return {
     pokemon: args.enemyPokemon,
-    captureRate: species.captureRate,
+    captureRate,
+    rarityTier: getCaptureRarityTier(captureRate),
+    encounterAct: Math.max(0, Math.floor(args.tileIndex / MAP_ROWS)),
+    isSubdued:
+      args.captureResolution?.phase === "subdued" ||
+      args.captureResolution?.phase === "capture-choice" ||
+      args.captureResolution?.phase === "capture-success" ||
+      args.captureResolution?.phase === "capture-failed",
+    attemptUsed: args.captureResolution?.attemptUsed ?? false,
+    catchable: true,
     member: createTeamMember(args.enemyPokemon, {
       level: args.enemyMember.level,
       moves: args.enemyMember.moves,
-      isShiny: false,
-      growthRate: species.growthRate,
+      isShiny: args.enemyMember.isShiny,
+      growthRate,
     }),
   };
 }
@@ -229,42 +292,13 @@ async function applyAutomaticEvolutions(
   };
 }
 
-/**
- * Stat ödülünü kalıcı boost olarak uygular (HP ödülünde max HP'yi de büyütür).
+/*
+ * `applyBoostReward` KALDIRILDI.
  *
- * Dışa açık, çünkü tempo simülasyonu (scripts/sim-run.mts) de bunu kullanıyor:
- * ödülün etkisini kopyalayarak taklit etmek, ölçtüğü şeyin oyundan sapması
- * demek olurdu.
+ * Savaş sonu ödülü artık kalıcı stat vermiyor (bkz. `lib/game/rewards.ts`),
+ * o yüzden uygulanacak bir şey yok. Tempo simülasyonu da (scripts/sim-run.mts)
+ * artık eşya ödülünü sayıyor.
  */
-export function applyBoostReward(
-  member: TeamMember,
-  pokemon: Pokemon,
-  reward: Reward,
-): TeamMember {
-  if (reward.kind !== "boost") return member;
-
-  const permanentBoosts = {
-    ...member.permanentBoosts,
-    [reward.stat]: (member.permanentBoosts[reward.stat] ?? 0) + reward.amount,
-  };
-
-  if (reward.stat !== "hp") return { ...member, permanentBoosts };
-
-  const newMaxHp = calculateMaxHp(
-    pokemon.baseStats,
-    member.level,
-    permanentBoosts,
-  );
-  return {
-    ...member,
-    permanentBoosts,
-    maxHp: newMaxHp,
-    currentHp:
-      member.currentHp > 0
-        ? Math.min(newMaxHp, member.currentHp + (newMaxHp - member.maxHp))
-        : 0,
-  };
-}
 
 /**
  * EXP Share: savaşa girmeyen üyelere yarım pay dağıtır.
@@ -380,7 +414,7 @@ export async function resolveVictory(
       ? await applyAutomaticEvolutions(experience.member, pokemon)
       : { member: experience.member, pokemon, evolution: null };
 
-  let currentMember = evolutionResult.member;
+  const currentMember = evolutionResult.member;
   const currentPokemon = evolutionResult.pokemon;
 
   // Yeni level'larda öğrenilen hareketler (evrim sonrası tür üzerinden).
@@ -410,8 +444,6 @@ export async function resolveVictory(
     const [rewardMove] = await getMoves([reward.moveId]);
     pendingMoves.push({ move: rewardMove, source: "reward" });
   }
-
-  currentMember = applyBoostReward(currentMember, currentPokemon, reward);
 
   const catchTarget = await buildCatchTarget(args);
 

@@ -1,19 +1,33 @@
 /*
  * Eski `MapEvent` formatını yeni `StoryEvent` şemasına çevirir.
  *
- * Eski olaylar (lib/data/mapEvents.ts) olduğu gibi duruyor ve kendi ekranıyla
- * çalışmaya devam ediyor; bu adaptör, aynı verinin yeni motorda da kayıpsız
- * çalıştığını garanti ediyor. `scripts/check-story.mts` her eski olayı buradan
- * geçirip sonucun geçerli olduğunu doğruluyor, böylece ileride havuzları
- * birleştirmek istediğimizde sürpriz çıkmıyor.
+ * ---------------------------------------------------------------------------
+ * ARTIK TEK RENDERER VAR
+ * ---------------------------------------------------------------------------
+ * Eskiden iki ayrı olay sistemi ve iki ayrı ekran vardı: yeni hikâye olayları
+ * `StoryEventDialog` ile, eski olaylar `EventDialog` ile çiziliyordu. Bunun
+ * somut sonucu şuydu — yeni olayların çoğu erken act'lere bağlı olduğu için
+ * koşu ilerledikçe havuz boşalıyor ve oyun SESSİZCE eski panele düşüyordu.
+ * Oyuncunun gördüğü şey "geç oyunda D&D panelleri kayboluyor"du.
+ *
+ * Şimdi bu adaptör bir uyumluluk katmanı değil, PRODUKSİYON YOLU: eski
+ * olayların hepsi buradan geçip aynı kayda, aynı renderer'a ve aynı olay
+ * havuzuna giriyor (bkz. `lib/story/registry.ts`). İkinci bir panel yok.
  *
  * Çeviri düz: eski formatta zar, gereksinim, bayrak ve ilişki yok — yeni
- * alanların hiçbiri uydurulmuyor, sadece var olanlar taşınıyor.
+ * alanların hiçbiri uydurulmuyor, sadece var olanlar taşınıyor. Resim (`art`)
+ * artık taşınıyor: yeni şemaya eklendi, çünkü onu kaybetmek olayların yarısını
+ * görsel olarak çıplak bırakırdı.
  */
 
 import type { EventOption, MapEvent } from "@/lib/data/mapEvents";
 
-import type { StoryChoice, StoryEvent, StoryOutcome } from "./types";
+import type {
+  StoryArt,
+  StoryChoice,
+  StoryEvent,
+  StoryOutcome,
+} from "./types";
 
 /** Eski olayların toplandığı yay. */
 export const LEGACY_ARC = "wayside";
@@ -65,8 +79,41 @@ export function adaptLegacyEvent(event: MapEvent): StoryEvent {
     text: event.text,
     // Eski olayların bir tonu yok; hepsi nötr sayılıyor.
     tone: "calm",
-    // Eski olaylar tekrarlanabilirdi — bu davranış korunuyor.
-    once: false,
+    /*
+     * Eski olaylar tekrarlanabilirdi; artık tekrarlanmıyor.
+     *
+     * `once: true` bir gereksinim: "aynı event aynı run'da tekrar çıkmasın".
+     * Eski davranış bir koşuda aynı sahneyi üç kez gösterebiliyordu.
+     */
+    once: true,
+    /*
+     * Eski olaylar act kapısı taşımıyor, yani her bantta çıkabiliyorlar.
+     *
+     * Bu kasıtlı: bunlar "yol kenarı" olayları — bir sırt çantası bulmak, bir
+     * köprüden geçmek — ve hiçbiri hikâyenin belirli bir noktasına ait değil.
+     * Yayın kendi olayları (`once` + bayrak koşullu) hikâyeyi taşıyor, bunlar
+     * havuzu dolduruyor.
+     */
+    band: "intro",
+    art: adaptArt(event.art),
     choices: event.options.map(adaptChoice),
   };
+}
+
+/** Eski resim formatı yeni şemaya birebir geçiyor. */
+function adaptArt(art: MapEvent["art"]): StoryArt {
+  if (art.kind === "icon") return { kind: "icon", name: art.name };
+  if (art.kind === "pokemon") {
+    return {
+      kind: "pokemon",
+      speciesId: art.speciesId,
+      caption: art.caption,
+    };
+  }
+  return { kind: "item", itemId: art.itemId, caption: art.caption };
+}
+
+/** Eski havuzun tamamı, yeni şemada. */
+export function adaptAllLegacyEvents(events: readonly MapEvent[]): StoryEvent[] {
+  return events.map(adaptLegacyEvent);
 }

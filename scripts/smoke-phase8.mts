@@ -162,18 +162,26 @@ const countOf = (itemId: string): number =>
 
 check('Koşu tek Revive ile başlıyor', countOf('revive'), 1);
 
+/*
+ * Envanter ölçümleri BAŞLANGIÇ DURUMUNA GÖRE yapılıyor.
+ *
+ * Koşu artık Revive + Poké Ball + Potion ile başlıyor ve bu liste ileride yine
+ * değişebilir. Sabit sayı yazmak testi her denge ayarında kırıyordu; farkı
+ * ölçmek hem doğru hem dayanıklı.
+ */
+const potionsAtStart = countOf('potion');
+const entriesAtStart = useGameStore.getState().player.inventory.length;
+
 useGameStore.getState().addItem('potion', 2);
-check('Envantere eşya ekleniyor', countOf('potion'), 2);
+check('Envantere eşya ekleniyor', countOf('potion'), potionsAtStart + 2);
 useGameStore.getState().consumeItem('potion');
-check('Eşya tüketiliyor', countOf('potion'), 1);
-useGameStore.getState().consumeItem('potion');
+check('Eşya tüketiliyor', countOf('potion'), potionsAtStart + 1);
+useGameStore.getState().consumeItem('potion', potionsAtStart + 1);
 check('Biten eşya envanterden çıkıyor', countOf('potion'), 0);
-// Koşu başlangıç eşyalarıyla (Revive + Poké Ball) açıldığı için biten iksir
-// silinince geriye o ikisi kalmalı.
 check(
-  'Biten eşya envanterden siliniyor (başlangıç eşyaları duruyor)',
+  'Biten eşya envanterden siliniyor (diğer eşyalar duruyor)',
   useGameStore.getState().player.inventory.length,
-  2,
+  entriesAtStart - 1,
 );
 
 // Yenilgi: Revive varsa harcanır ve koşu sürer.

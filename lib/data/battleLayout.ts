@@ -56,6 +56,15 @@ export const BATTLE_LAYOUT = {
     hit: { x: 72.9, y: 39 },
   } satisfies SpriteAnchor,
 
+  /** Trainer savaşında Pokémon biraz sola kayar; body sprite sağında durur. */
+  trainerEnemySprite: {
+    x: 61,
+    groundY: 62.5,
+    scale: 0.94,
+    maxHeightPx: 58,
+    hit: { x: 61, y: 39 },
+  } satisfies SpriteAnchor,
+
   /** Your Pokémon, on the near platform at the bottom edge. */
   playerSprite: {
     x: 26.3, // 63 / 240

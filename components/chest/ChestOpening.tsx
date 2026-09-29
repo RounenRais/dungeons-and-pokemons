@@ -11,7 +11,6 @@ import { AnimatePresence, motion } from "framer-motion";
 import { MoveLearnPanel } from "@/components/MoveLearnPanel";
 import { getItemLabel, getItemSpriteUrl } from "@/lib/data/items";
 import {
-  applyChestBoost,
   buildReel,
   describeLoot,
   resolveChestLoot,
@@ -20,7 +19,6 @@ import {
   type ResolvedChestLoot,
 } from "@/lib/game/chest";
 import { RARITY_COLORS, RARITY_LABELS } from "@/lib/data/rarity";
-import { STAT_REWARD_LABELS } from "@/lib/game/rewards";
 import { getMemberName } from "@/lib/game/team";
 import type { Pokemon, Rarity, TeamMember } from "@/lib/types";
 
@@ -35,6 +33,8 @@ export interface ChestResult {
   member: TeamMember;
   goldDelta: number;
   itemId: string | null;
+  /** `itemId` doluysa kaç tane. Verilmezse 1 — taşlar ve tek eşyalar için. */
+  itemQuantity?: number;
   /** Bonus Pokémon çıktıysa takıma eklenecek üye. */
   newMember: TeamMember | null;
   newPokemon: Pokemon | null;
@@ -130,25 +130,19 @@ export function ChestOpening({
         });
         return;
 
-      case "boost": {
-        const boosted = applyChestBoost(
-          member,
-          pokemon,
-          loot.stat,
-          loot.amount,
-        );
+      case "item":
         onDone({
-          member: boosted,
+          member,
           goldDelta: 0,
-          itemId: null,
+          itemId: loot.itemId,
+          itemQuantity: loot.quantity,
           newMember: null,
           newPokemon: null,
           logs: [
-            `${tierLabel} case: ${STAT_REWARD_LABELS[loot.stat]} permanently +${loot.amount}.`,
+            `The ${tierLabel} case held ${loot.quantity}x ${getItemLabel(loot.itemId)}.`,
           ],
         });
         return;
-      }
 
       case "stone":
         onDone({
@@ -398,17 +392,17 @@ function LootCard({ loot }: { loot: ResolvedChestLoot }) {
 
       <p className="mt-1 text-lg font-bold">
         {loot.kind === "gold" && `${loot.amount} coins`}
-        {loot.kind === "boost" &&
-          `${STAT_REWARD_LABELS[loot.stat]} +${loot.amount}`}
+        {loot.kind === "item" &&
+          `${loot.quantity}x ${getItemLabel(loot.itemId)}`}
         {loot.kind === "move" && loot.move.displayName}
         {loot.kind === "stone" && getItemLabel(loot.itemId)}
         {loot.kind === "pokemon" &&
           `${loot.pokemon.displayName} Lv ${loot.member.level}`}
       </p>
 
-      {loot.kind === "boost" && (
+      {loot.kind === "item" && (
         <p className="mt-1 text-xs text-[var(--ink-faint)]">
-          Permanent stat boost
+          Straight into your bag
         </p>
       )}
       {loot.kind === "move" && (

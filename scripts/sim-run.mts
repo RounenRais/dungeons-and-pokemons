@@ -45,13 +45,11 @@ import {
   generateMap,
   getDepth,
   getReachableNodes,
-  MAP_ROWS,
 } from '../lib/game/map';
 import { getChestGold } from '../lib/game/chest';
 import { createBossEnemy, createWildEnemy } from '../lib/game/enemy';
 import { calculateXpGain, applyExperience, getMovesLearnedAtLevels } from '../lib/game/leveling';
 import {
-  applyBoostReward,
   evolveToLevel,
   teachMove,
   VICTORY_HEAL_PERCENT,
@@ -217,6 +215,8 @@ interface RunReport {
   actsCleared: number;
   levelByTile: Map<number, number>;
   goldEarned: number;
+  /** Savaş ödülünden düşen sarf malzemesi sayısı (eski `boost` yerine). */
+  itemsEarned: number;
   potionsBought: number;
   potionsUsed: number;
   battles: number;
@@ -252,6 +252,7 @@ async function simulateRun(seed: number): Promise<RunReport> {
     actsCleared: 0,
     levelByTile: new Map(),
     goldEarned: 0,
+    itemsEarned: 0,
     potionsBought: 0,
     potionsUsed: 0,
     battles: 0,
@@ -466,8 +467,15 @@ async function simulateRun(seed: number): Promise<RunReport> {
       report.goldEarned += reward.amount;
       gold += reward.amount;
     }
-    if (reward.kind === 'boost') {
-      member = applyBoostReward(member, pokemon, reward);
+    /*
+     * Ödül artık kalıcı stat vermiyor; sarf malzemesi veriyor.
+     *
+     * Simülasyon bunu sadece SAYIYOR: eşyaların gerçekte ne zaman
+     * kullanılacağını modellemek tempo ölçümüne bir şey katmıyor, ama koşu
+     * boyunca kaç eşya düştüğü ekonomi dengesi için anlamlı bir sayı.
+     */
+    if (reward.kind === 'item') {
+      report.itemsEarned += reward.quantity;
     }
 
     const xp = Math.max(

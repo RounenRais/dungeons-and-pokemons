@@ -1,108 +1,344 @@
-// Skor tablosu kuralları: ad doğrulama, sıralama, skip davranışı, sunucu
-// tarafı sınırlar ve "global tabloya erişilemiyor" hâlindeki geri düşüş.
-//
-// Ağ YOK: `fetch` bu ortamda kasıtlı olarak patlıyor, çünkü test edilmek
-// istenen şeylerden biri tam olarak bu — paylaşılan tabloya ulaşılamadığında
-// oyun durmuyor, cihazdaki aynaya düşüyor ve bunu `source: 'local'` diye
-// söylüyor.
+/*
+ * Skor tablosunun sözleşmesi: ad kuralları, puanlama ve doğrulama.
+ *
+ * Ağa çıkmıyor ve veritabanına dokunmuyor — burada test edilen şey İSTEMCİ VE
+ * SUNUCUNUN PAYLAŞTIĞI saf mantık (`lib/game/leaderboardSchema.ts` ve
+ * `lib/game/score.ts`). Route'un kendisi `scripts/check-leaderboard-api.mts`
+ * içinde ayrıca doğrulanıyor.
+ *
+ * Çalıştırma: npm run smoke:leaderboard
+ */
 
-const store = new Map<string, string>();
-(globalThis as Record<string, unknown>).window = {
-  localStorage: {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => { store.set(k, v); },
-    removeItem: (k: string) => { store.delete(k); },
-  },
-};
-// Ağ erişimi olmayan bir tarayıcıyı taklit ediyoruz.
-(globalThis as Record<string, unknown>).fetch = () => {
-  throw new Error('offline');
-};
-
-const {
-  isValidName, normaliseName, readLeaderboard, submitRun, fetchLeaderboard,
-  qualifiesForLeaderboard, LOCAL_LEADERBOARD_SIZE, MIN_NAME_LENGTH,
-} = await import('../lib/game/leaderboard');
-
-const {
-  MAX_DEPTH, MAX_LEVEL, MAX_BOSSES, normaliseSubmission, compareEntries,
-} = await import('../lib/game/leaderboardSchema');
+import {
+  compareEntries,
+  computeRunScore,
+  createRunId,
+  MAX_NAME_LENGTH,
+  MIN_NAME_LENGTH,
+  NAME_MESSAGES,
+  normaliseName,
+  normaliseRunSummary,
+  parseEntries,
+  RUN_LIMITS,
+  toEntry,
+  validateName,
+  validateRunSummary,
+  type LeaderboardEntry,
+  type RunSummary,
+} from "@/lib/game/leaderboardSchema";
+import {
+  DIFFICULTY_MULTIPLIERS,
+  getMaxPossibleScore,
+  MIN_LEVEL_FOR_BADGES,
+  SCORE_WEIGHTS,
+} from "@/lib/game/score";
+import { LEAGUE_STAGES } from "@/lib/game/league";
 
 let failures = 0;
-function check(label: string, actual: unknown, expected: unknown) {
+function check(label: string, actual: unknown, expected: unknown): void {
   const ok = JSON.stringify(actual) === JSON.stringify(expected);
   if (!ok) failures += 1;
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}  → ${JSON.stringify(actual)}${ok ? '' : ` (beklenen ${JSON.stringify(expected)})`}`);
+  console.log(
+    `${ok ? "PASS" : "FAIL"}  ${label}  → ${JSON.stringify(actual)}${
+      ok ? "" : ` (beklenen ${JSON.stringify(expected)})`
+    }`,
+  );
 }
 
-// --- Ad doğrulama ---
-check('boş ad reddedilir', isValidName(''), false);
-check('sadece boşluk reddedilir', isValidName('    '), false);
-check(`${MIN_NAME_LENGTH} karakterden kısa reddedilir`, isValidName('abc'), false);
-check(`tam ${MIN_NAME_LENGTH} karakter kabul edilir`, isValidName('abcd'), true);
-check('baştaki/sondaki boşluk sayılmaz', isValidName('  ab  '), false);
-check('boşluklu ad kırpılır', normaliseName('  Ash   Ketchum  '), 'Ash Ketchum');
-check('ad 16 karakterde kesilir', normaliseName('a'.repeat(30)).length, 16);
-// Ad artık başka oyunculara gösteriliyor: kontrol karakterleri atılıyor.
-check('kontrol karakterleri atılır', normaliseName('Ash\u0000\u001bKet'), 'AshKet');
+// ---------------------------------------------------------------------------
+console.log("--- Ad kuralları");
+// ---------------------------------------------------------------------------
 
-// --- Skip tabloya yazmaz ---
-check('skip edilen koşu yazılmaz', (await submitRun(null, { depth: 99, bestLevel: 50, bossesDefeated: 5 })).entry, null);
-check('geçersiz ad yazılmaz', (await submitRun('ab', { depth: 99, bestLevel: 50, bossesDefeated: 5 })).entry, null);
-check('tablo hâlâ boş', readLeaderboard().length, 0);
+check("En az uzunluk 3", MIN_NAME_LENGTH, 3);
+check("En fazla uzunluk 16", MAX_NAME_LENGTH, 16);
 
-// --- Ağ yokken yerel aynaya düşülüyor ---
-const offline = await submitRun('Misty', { depth: 10, bestLevel: 12, bossesDefeated: 1 });
-check('ağ yokken kaynak yerel', offline.source, 'local');
-check('ağ yokken koşu yine de kaydedilir', offline.entry?.name, 'Misty');
-check('okuma da yerel aynaya düşer', (await fetchLeaderboard()).source, 'local');
+// Üç karakterli ad artık GEÇERLİ (eskiden en az dört gerekiyordu).
+check("Üç karakterli ad kabul ediliyor", validateName("Red").ok, true);
+check("İki karakterli ad reddediliyor", validateName("Re").ok, false);
+check(
+  "Kısa ad Türkçe hata veriyor",
+  validateName("Re").message,
+  NAME_MESSAGES["too-short"],
+);
 
-// --- Sıralama derinliğe göre ---
-await submitRun('Brock', { depth: 30, bestLevel: 22, bossesDefeated: 3 });
-await submitRun('Gary!', { depth: 20, bestLevel: 18, bossesDefeated: 2 });
-check('en derin koşu başta', readLeaderboard().map((e) => e.name), ['Brock', 'Gary!', 'Misty']);
+// Baştaki ve sondaki boşluklar temizleniyor.
+check("Baştaki/sondaki boşluk temizleniyor", normaliseName("  Ash  "), "Ash");
+check("Boşlukla dolu ad geçerli sayılıyor", validateName("  Ash  ").ok, true);
+check("Temizlenen ad döndürülüyor", validateName("  Ash  ").name, "Ash");
 
-// --- Eşitlikte level ayırır ---
-await submitRun('Erika', { depth: 30, bestLevel: 40, bossesDefeated: 3 });
-check('eşit derinlikte yüksek level üstte', readLeaderboard()[0].name, 'Erika');
+// Sadece boşluktan oluşan ad reddediliyor.
+check("Sadece boşluk reddediliyor", validateName("     ").ok, false);
+check(
+  "Sadece boşluk kendi mesajını veriyor",
+  validateName("     ").reason,
+  "blank",
+);
+check("Boş ad reddediliyor", validateName("").ok, false);
+check("Boş ad kendi mesajını veriyor", validateName("").reason, "empty");
 
-// --- Yerel ayna kapasitesi ---
-for (let i = 0; i < LOCAL_LEADERBOARD_SIZE + 20; i += 1) {
-  await submitRun(`Filler${i}`, { depth: 5 + i, bestLevel: 5, bossesDefeated: 0 });
+// Görünmez karakterler de "boş" sayılıyor: adı olmayan bir satır olmasın.
+check(
+  "Sıfır genişlikli karakterlerden oluşan ad reddediliyor",
+  validateName("​​​").ok,
+  false,
+);
+
+// Çok uzun ad SESSİZCE KESİLMİYOR, reddediliyor.
+check(
+  "17 karakterli ad reddediliyor",
+  validateName("A".repeat(MAX_NAME_LENGTH + 1)).ok,
+  false,
+);
+check(
+  "Uzun ad kendi mesajını veriyor",
+  validateName("A".repeat(40)).reason,
+  "too-long",
+);
+check(
+  "Tam 16 karakter kabul ediliyor",
+  validateName("A".repeat(MAX_NAME_LENGTH)).ok,
+  true,
+);
+
+// Aradaki boşluk dizileri tek boşluğa iniyor.
+check("Çoklu boşluk tek boşluğa iniyor", normaliseName("Ash    Ketchum"), "Ash Ketchum");
+// Kontrol karakterleri atılıyor.
+check("Kontrol karakteri atılıyor", normaliseName("Ash\u0007Ketchum"), "AshKetchum");
+
+// Bütün hata mesajları Türkçe (brief'in açık isteği).
+check(
+  "Bütün ad hata mesajları dolu",
+  Object.values(NAME_MESSAGES).every((message) => message.length > 5),
+  true,
+);
+
+// Geçersiz tipler de reddediliyor.
+for (const bad of [null, undefined, 42, {}, []]) {
+  if (validateName(bad).ok) {
+    failures += 1;
+    console.log(`FAIL  ${JSON.stringify(bad)} ad olarak kabul edildi`);
+  }
 }
-check(`yerel ayna ${LOCAL_LEADERBOARD_SIZE} satırda kalır`, readLeaderboard().length, LOCAL_LEADERBOARD_SIZE);
-const depths = readLeaderboard().map((e) => e.depth);
-check('tablo azalan sırada', [...depths].sort((a, b) => b - a), depths);
+console.log("PASS  Ad olmayan tipler reddediliyor");
 
-// --- Girme şansı ---
-const full = Array.from({ length: 100 }, (_, i) => ({
-  id: `x${i}`, name: 'Filler', depth: 200 - i, bestLevel: 5, bossesDefeated: 0, finishedAt: i,
-}));
-check('dolu tabloda en kötüden kötü koşu giremez', qualifiesForLeaderboard(50, full), false);
-check('dolu tabloda en kötüden iyi koşu girer', qualifiesForLeaderboard(500, full), true);
-check('tablo dolmadıysa her koşu girer', qualifiesForLeaderboard(1, full.slice(0, 10)), true);
+// ---------------------------------------------------------------------------
+console.log("\n--- Puanlama");
+// ---------------------------------------------------------------------------
 
-// --- Sunucu tarafı sınırlar ---
-// Tablo artık paylaşılan: doğrudan API'ye istek atan biri de bu sınırları
-// aşamıyor, yoksa tek bir satır tabloyu kalıcı olarak bozabilir.
-check('saçma derinlik kırpılır', normaliseSubmission({ depth: 1e9, bestLevel: 5, bossesDefeated: 0 }).depth, MAX_DEPTH);
-check('saçma level kırpılır', normaliseSubmission({ depth: 5, bestLevel: 9999, bossesDefeated: 0 }).bestLevel, MAX_LEVEL);
-check('saçma boss sayısı kırpılır', normaliseSubmission({ depth: 5, bestLevel: 5, bossesDefeated: 9999 }).bossesDefeated, MAX_BOSSES);
-check('negatif değer sıfırlanır', normaliseSubmission({ depth: -40, bestLevel: -1, bossesDefeated: -1 }), { depth: 0, bestLevel: 0, bossesDefeated: 0 });
-check('sayı olmayan değer sıfırlanır', normaliseSubmission({ depth: 'yok', bestLevel: NaN, bossesDefeated: Infinity }), { depth: 0, bestLevel: 0, bossesDefeated: 0 });
-check('ondalık aşağı yuvarlanır', normaliseSubmission({ depth: 12.9, bestLevel: 5, bossesDefeated: 0 }).depth, 12);
-check('eksik gövde sıfırlarla döner', normaliseSubmission(null), { depth: 0, bestLevel: 0, bossesDefeated: 0 });
+const emptyRun: RunSummary = {
+  bestLevel: 0,
+  badges: 0,
+  eliteFourDefeated: 0,
+  champion: false,
+  trainerWins: 0,
+  depth: 0,
+  difficulty: "normal",
+};
 
-// --- Sıralama karşılaştırıcısı ---
-const older = { id: 'a', name: 'A', depth: 10, bestLevel: 5, bossesDefeated: 0, finishedAt: 1 };
-const newer = { id: 'b', name: 'B', depth: 10, bestLevel: 5, bossesDefeated: 0, finishedAt: 2 };
-check('tam eşitlikte eski koşu üstte', compareEntries(older, newer) < 0, true);
+check("Boş koşu 0 puan", computeRunScore(emptyRun), 0);
 
-// --- Bozuk kayıt tabloyu kilitlemez ---
-store.set('pokerun:leaderboard', '{ bu json degil');
-check('bozuk kayıt boş tablo döner', readLeaderboard(), []);
-store.set('pokerun:leaderboard', JSON.stringify([{ name: 'OK', depth: 4 }, { junk: true }, null]));
-check('geçersiz satırlar elenir', readLeaderboard().map((e) => e.name), ['OK']);
+// Her kalem puana katkı veriyor.
+check(
+  "Level puan veriyor",
+  computeRunScore({ ...emptyRun, bestLevel: 10 }),
+  10 * SCORE_WEIGHTS.perLevel,
+);
+check(
+  "Rozet puan veriyor",
+  computeRunScore({ ...emptyRun, bestLevel: 68, badges: 8, trainerWins: 8 }) >
+    computeRunScore({ ...emptyRun, bestLevel: 68 }),
+  true,
+);
 
-console.log(failures === 0 ? '\nTÜM KONTROLLER GEÇTİ' : `\n${failures} KONTROL BAŞARISIZ`);
+// Şampiyonluk en büyük tek kalem.
+check(
+  "Şampiyonluk en büyük tek kalem",
+  SCORE_WEIGHTS.champion > SCORE_WEIGHTS.perBadge * 4,
+  true,
+);
+
+// Zorluk çarpanı skoru ölçekliyor.
+const hardRun: RunSummary = { ...emptyRun, bestLevel: 50, difficulty: "hard" };
+const normalRun: RunSummary = { ...emptyRun, bestLevel: 50 };
+check(
+  "Zorluk çarpanı skoru büyütüyor",
+  computeRunScore(hardRun) > computeRunScore(normalRun),
+  true,
+);
+check(
+  "Brutal en yüksek çarpan",
+  DIFFICULTY_MULTIPLIERS.brutal > DIFFICULTY_MULTIPLIERS.hard,
+  true,
+);
+
+// Puan her zaman tam sayı.
+check(
+  "Puan tam sayı",
+  Number.isInteger(computeRunScore({ ...emptyRun, bestLevel: 37, difficulty: "hard" })),
+  true,
+);
+
+// PARA VE KUMARHANE PUANA GİRMİYOR.
+// Bunu doğrulamanın yolu: `RunSummary` içinde para diye bir alan YOK.
+check(
+  "Koşu özetinde para/kumarhane alanı yok",
+  Object.keys(emptyRun).some((key) =>
+    ["gold", "coins", "casino", "streak"].includes(key),
+  ),
+  false,
+);
+
+console.log(`INFO  teorik en yüksek puan: ${getMaxPossibleScore().toLocaleString("en-US")}`);
+
+// ---------------------------------------------------------------------------
+console.log("\n--- Koşu doğrulaması (bariz sahte skorlar)");
+// ---------------------------------------------------------------------------
+
+const championRun: RunSummary = {
+  bestLevel: 100,
+  badges: 8,
+  eliteFourDefeated: 4,
+  champion: true,
+  trainerWins: 40,
+  depth: 140,
+  difficulty: "normal",
+};
+check("Geçerli şampiyon koşusu kabul ediliyor", validateRunSummary(championRun), []);
+
+// Rozetsiz Elite Four imkânsız.
+check(
+  "Rozetsiz Elite Four reddediliyor",
+  validateRunSummary({ ...championRun, badges: 0, champion: false }).length > 0,
+  true,
+);
+// Elite Four'suz şampiyonluk imkânsız.
+check(
+  "Elite Four'suz şampiyonluk reddediliyor",
+  validateRunSummary({ ...championRun, eliteFourDefeated: 0 }).length > 0,
+  true,
+);
+// Level 7'de sekiz rozet imkânsız.
+check(
+  "Level bandının altındaki rozet sayısı reddediliyor",
+  validateRunSummary({ ...championRun, bestLevel: 7 }).length > 0,
+  true,
+);
+// Trainer galibiyeti yenilen liderlerden az olamaz.
+check(
+  "Yetersiz trainer galibiyeti reddediliyor",
+  validateRunSummary({ ...championRun, trainerWins: 2 }).length > 0,
+  true,
+);
+// Sınırların üstü reddediliyor.
+check(
+  "Level 101 reddediliyor",
+  validateRunSummary({ ...championRun, bestLevel: 101 }).length > 0,
+  true,
+);
+check(
+  "Dokuz rozet reddediliyor",
+  validateRunSummary({ ...championRun, badges: 9 }).length > 0,
+  true,
+);
+
+// Level bantları lig yapısıyla hizalı olmak zorunda.
+check(
+  "Rozet level bantları lig aşamalarıyla tutarlı",
+  MIN_LEVEL_FOR_BADGES.length,
+  RUN_LIMITS.maxBadges + 1,
+);
+let bandsAligned = true;
+for (let badges = 1; badges <= 8; badges += 1) {
+  // badges rozeti kazanmak için o Gym'i yenmek gerekiyor; o Gym'in bandının
+  // alt ucu, izin verilen en düşük level'ın üstünde olmalı (tolerans payıyla).
+  const stage = LEAGUE_STAGES[badges - 1];
+  if (MIN_LEVEL_FOR_BADGES[badges] > stage.levelCap) bandsAligned = false;
+}
+check("Level bantları Gym tavanlarını aşmıyor", bandsAligned, true);
+
+// ---------------------------------------------------------------------------
+console.log("\n--- Ham veri normalleştirme");
+// ---------------------------------------------------------------------------
+
+const hostile = normaliseRunSummary({
+  bestLevel: 99999,
+  badges: -5,
+  eliteFourDefeated: "4",
+  champion: "yes",
+  trainerWins: Number.NaN,
+  depth: Infinity,
+  difficulty: "impossible",
+});
+check("Level sınıra çekiliyor", hostile.bestLevel, RUN_LIMITS.maxLevel);
+check("Negatif rozet sıfıra çekiliyor", hostile.badges, 0);
+check("Metin sayı okunuyor", hostile.eliteFourDefeated, 4);
+check("champion sadece true ise true", hostile.champion, false);
+check("NaN sıfıra çekiliyor", hostile.trainerWins, 0);
+check("Infinity sıfıra çekiliyor", hostile.depth, 0);
+check("Bilinmeyen zorluk normal'e düşüyor", hostile.difficulty, "normal");
+
+// ---------------------------------------------------------------------------
+console.log("\n--- Satır ayrıştırma ve sıralama");
+// ---------------------------------------------------------------------------
+
+/*
+ * Okunan satırların puanı YENİDEN HESAPLANIYOR.
+ *
+ * Veritabanındaki bir satır elle düzenlenip puanı şişirilse bile, okunurken
+ * özetinden gelen gerçek puana geri düşüyor. Bu testin varlık sebebi tam
+ * olarak o: `score` alanına güvenilmediğini kanıtlamak.
+ */
+const tampered = parseEntries([
+  {
+    id: "cheat",
+    name: "Cheater",
+    score: 999_999_999,
+    bestLevel: 5,
+    badges: 0,
+    eliteFourDefeated: 0,
+    champion: false,
+    trainerWins: 0,
+    depth: 3,
+    difficulty: "normal",
+    finishedAt: 1,
+  },
+]);
+check("Şişirilmiş puan yeniden hesaplanıyor", tampered[0]?.score, 5 * SCORE_WEIGHTS.perLevel);
+
+// Adı olmayan satırlar atılıyor.
+check(
+  "Adsız satır atılıyor",
+  parseEntries([{ id: "x", name: "", bestLevel: 10 }]).length,
+  0,
+);
+check("Dizi olmayan girdi boş liste veriyor", parseEntries("nope").length, 0);
+
+// Sıralama: puan, rozet, level, derinlik, sonra eski koşu üstte.
+const rows: LeaderboardEntry[] = [
+  toEntry("a", "Low", { ...emptyRun, bestLevel: 10 }, 1000),
+  toEntry("b", "High", { ...emptyRun, bestLevel: 90, badges: 8, trainerWins: 8 }, 2000),
+  toEntry("c", "Mid", { ...emptyRun, bestLevel: 50 }, 1500),
+];
+const sorted = [...rows].sort(compareEntries);
+check("En yüksek puan başta", sorted[0]?.name, "High");
+check("En düşük puan sonda", sorted[2]?.name, "Low");
+
+// Eşitlikte eski koşu üstte.
+const tieOld = toEntry("old", "Old", { ...emptyRun, bestLevel: 40 }, 1000);
+const tieNew = toEntry("new", "New", { ...emptyRun, bestLevel: 40 }, 5000);
+check(
+  "Eşitlikte eski koşu üstte",
+  [tieNew, tieOld].sort(compareEntries)[0]?.name,
+  "Old",
+);
+
+// Koşu kimliği benzersiz.
+const ids = new Set(Array.from({ length: 500 }, () => createRunId()));
+check("500 koşu kimliği benzersiz", ids.size, 500);
+
+// ---------------------------------------------------------------------------
+
+console.log(
+  failures === 0 ? "\nTÜM KONTROLLER GEÇTİ" : `\n${failures} KONTROL BAŞARISIZ`,
+);
 process.exit(failures === 0 ? 0 : 1);

@@ -241,7 +241,7 @@ export const rivalLast: StoryEvent = {
         dc: 17,
         partialDc: 13,
         modifiers: [
-          { kind: "relic", relicId: "double-dice", bonus: 3, label: "Loaded dice" },
+          { kind: "relic", relicId: "loaded-die", bonus: 3, label: "Loaded dice" },
           { kind: "reputation", per: 25, max: 2, label: "He believes you" },
           { kind: "corruption", per: 25, max: 2, label: "You have set terms before" },
         ],

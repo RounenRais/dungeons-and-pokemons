@@ -11,6 +11,7 @@ import {
 } from '../lib/game/leveling';
 import { resolveVictory, teachMove } from '../lib/game/progression';
 import { getLearnableUnknownMoves, rollReward } from '../lib/game/rewards';
+import { getShopItem } from '../lib/data/shopItems';
 import { createRandom } from '../lib/game/rng';
 import { calculateMaxHp } from '../lib/game/stats';
 import { createTeamMember } from '../lib/game/team';
@@ -114,9 +115,17 @@ check('4 hareketliyken slot seçilmezse değişmiyor', notReplaced.moves.map((m)
 const rewardContext = { tileIndex: 10, isBoss: false, pokemon: charmander, knownMoveIds: base.moves.map((m) => m.id) };
 const rewards = Array.from({ length: 300 }, (_, i) => rollReward(createRandom(i + 1), rewardContext));
 const kinds = new Set(rewards.map((r) => r.kind));
-check('Üç ödül kategorisi de çıkıyor', [...kinds].sort(), ['boost', 'gold', 'move']);
+check('Üç ödül kategorisi de çıkıyor', [...kinds].sort(), ['gold', 'item', 'move']);
 check('Altın ödülü pozitif', rewards.every((r) => r.kind !== 'gold' || r.amount > 0), true);
-check('Güçlendirme pozitif', rewards.every((r) => r.kind !== 'boost' || r.amount > 0), true);
+/*
+ * Üçüncü kategori artık kalıcı stat değil SARF MALZEMESİ.
+ *
+ * Kalıcı ham stat veren bütün kaynaklar kaldırıldı (bkz. docs/progression.md);
+ * yerine top/iksir düşüyor. Adet her zaman pozitif olmak zorunda, yoksa
+ * "0x Potion kazandın" gibi bir ödül çıkardı.
+ */
+check('Eşya ödülü pozitif adet veriyor', rewards.every((r) => r.kind !== 'item' || r.quantity > 0), true);
+check('Eşya ödülü gerçek bir eşya kimliği veriyor', rewards.every((r) => r.kind !== 'item' || getShopItem(r.itemId) !== null), true);
 check('Hareket ödülü bilinmeyen hareketten geliyor', rewards.every((r) => r.kind !== 'move' || !base.moves.some((m) => m.id === r.moveId)), true);
 check('Boss daha çok altın veriyor', (() => {
   const normal = Array.from({ length: 200 }, (_, i) => rollReward(createRandom(i + 1), rewardContext)).filter((r) => r.kind === 'gold').map((r) => r.amount as number);

@@ -29,6 +29,7 @@ import {
 } from "@/lib/data/bosses";
 import { MAP_ROWS } from "./map";
 import { getZone, getZoneIndex, getZoneLap, THEME_CHANCE } from "./zones";
+import { rollEncounterLevel, type EncounterTier } from "./levelScaling";
 import { pickOne, randomInt, type RandomFn } from "./rng";
 import { createTeamMember } from "./team";
 import { getMoves, getPokemon, selectStartingMoveIds } from "@/lib/pokeapi";
@@ -77,6 +78,36 @@ export interface BstRange {
 }
 
 /**
+ * Opening encounter pool: every entry is a basic, unevolved species. Keeping
+ * this explicit makes the first fight deterministic and prevents a generated
+ * evolved wall such as Bronzong from appearing before the player can build a
+ * team.
+ */
+export const FIRST_ENCOUNTER_SPECIES_IDS = [
+  19, 52, 161, 263, 399, 504, 659, 734, 819, 915,
+] as const;
+
+export function pickFirstEncounterSpecies(random: RandomFn): number {
+  return pickOne(random, [...FIRST_ENCOUNTER_SPECIES_IDS]);
+}
+
+/** Tutorial fight: no status lottery, recoil, multi-hit spike, or heavy move. */
+export function isOpeningBattleMoveSafe(move: Move): boolean {
+  return (
+    move.category !== "status" &&
+    (move.power ?? 0) > 0 &&
+    (move.power ?? 0) <= 50 &&
+    (move.accuracy ?? 100) >= 85 &&
+    move.meta.ailment === "none" &&
+    move.meta.ailmentChance === 0 &&
+    move.meta.flinchChance === 0 &&
+    move.meta.drain >= 0 &&
+    move.meta.minHits === null &&
+    move.meta.maxHits === null
+  );
+}
+
+/**
  * Tahtada ilerledikçe düşmanların oyuncuya göre kazandığı ek güç — oyuncunun
  * BST'sinin oranı olarak (kare başına ~%0.5).
  */
@@ -120,14 +151,14 @@ export function getBstRange(
   if (kind === "elite") {
     return { min: scale(0.78), max: scale(1.0) };
   }
-  // Normal düşmanlar oyuncunun altında: 1v1'de oyuncu belirgin biçimde
-  // avantajlı. Tavan derinlik ne olursa olsun oyuncunun altında kalıyor —
-  // kare sürüklenmesi bunu aşarsa rutin savaşlar oyuncudan güçlü rakiplere
-  // dönüşüyor ve koşunun son yarısı sürekli bıçak sırtına biniyor. Derinliğin
-  // zorluğu BST'den değil level, IV, hareket seti ve AI ustalığından gelsin.
+  // Wild savaşlar yakalama fırsatı olmaya devam ediyor ama artık otomatik
+  // galibiyet değiller. Level'ı yükseltmek yakalanan Pokémon'u bedava
+  // güçlendireceği için zorluk tür gücü, IV, moveset ve AI arasında paylaşılıyor.
+  // Tavan yine oyuncunun hemen altında: kötü eşleşme tehlikeli olabilir ama
+  // sıradan wild rakip ham statla oyuncuyu ezmez.
   return {
-    min: scale(0.78),
-    max: Math.min(scale(0.93), Math.round(playerBst * 0.95)),
+    min: scale(0.84),
+    max: Math.min(scale(0.98), Math.round(playerBst * 0.99)),
   };
 }
 
@@ -266,17 +297,34 @@ export function getLevelBonus(kind: EncounterKind, tileIndex: number): number {
 }
 
 /**
- * Düşman level'ı oyuncunun level'ına bağlıdır — tahtadaki ilerleme, oyuncunun
- * kendi level'ı üzerinden hissedilir; oyuncu geride kalırsa rakipler de kalır.
+ * Düşman level'ı.
+ *
+ * ---------------------------------------------------------------------------
+ * ARTIK REFERANS SEVİYE ÜZERİNDEN
+ * ---------------------------------------------------------------------------
+ * `playerLevel` parametresi artık takımın ORTALAMASI değil, `lib/game/
+ * levelScaling.ts` içindeki REFERANS SEVİYE (en yüksek %70 + ilk üçün
+ * ortalaması %30). Çağıran taraf bunu hesaplayıp geçiyor.
+ *
+ * Bandlar da oradan geliyor: vahşi Pokémon referansın 1-4 altında, normal
+ * trainer ±1, elit +1..+3. `storyMinimum` hikâyenin tabanı — Elite Four'un
+ * seviyesi oyuncunun geride kalmasına bağlı olmasın diye (bkz.
+ * `lib/game/league.ts`).
+ *
+ * `getLevelBonus` KALDIRILMADI ama artık sadece boss'lara uygulanıyor: act
+ * sonu boss'unun kendi level ticareti var (bkz. `lib/data/bosses.ts`).
  */
 export function getEnemyLevel(
-  playerLevel: number,
+  referenceLevel: number,
   kind: EncounterKind = "wild",
   random: RandomFn = Math.random,
   tileIndex = 0,
+  storyMinimum = 1,
 ): number {
-  const variance = kind === "wild" ? randomInt(random, -1, 0) : randomInt(random, 0, 1);
-  return Math.max(2, playerLevel + variance + getLevelBonus(kind, tileIndex));
+  const tier: EncounterTier =
+    kind === "wild" ? "wild" : kind === "elite" ? "elite" : "legendary";
+  const rolled = rollEncounterLevel(referenceLevel, tier, random, storyMinimum);
+  return Math.max(2, rolled + getLevelBonus(kind, tileIndex));
 }
 
 /**
@@ -288,8 +336,8 @@ export function getEnemyLevel(
  */
 export function getEnemyIv(kind: EncounterKind, tileIndex: number): number {
   const progress = getRunProgress(tileIndex);
-  const floor = kind === "boss" ? 16 : kind === "elite" ? 12 : 6;
-  const ceiling = kind === "boss" ? MAX_IV : kind === "elite" ? 28 : 20;
+  const floor = kind === "boss" ? 16 : kind === "elite" ? 12 : 8;
+  const ceiling = kind === "boss" ? MAX_IV : kind === "elite" ? 28 : 24;
   return Math.min(ceiling, Math.round(floor + (ceiling - floor) * progress));
 }
 
@@ -309,7 +357,7 @@ export function getEnemySkill(kind: EncounterKind, tileIndex: number): number {
   if (kind === "elite") return Math.min(1, 0.45 + 0.45 * progress);
   // Vahşi Pokémon hiçbir zaman tam ustalığa çıkmaz: rutin savaşlar da
   // düşünmeyi gerektirsin ama her seferinde ölüm kalım olmasın.
-  return Math.min(0.6, 0.15 + 0.45 * progress);
+  return Math.min(0.68, 0.22 + 0.46 * progress);
 }
 
 /**
@@ -323,8 +371,8 @@ export function getMovesetQuality(
   tileIndex: number,
 ): number {
   const progress = getRunProgress(tileIndex);
-  const floor = kind === "boss" ? 0.3 : kind === "elite" ? 0.15 : 0;
-  const ceiling = kind === "wild" ? 0.75 : 1;
+  const floor = kind === "boss" ? 0.3 : kind === "elite" ? 0.15 : 0.08;
+  const ceiling = kind === "wild" ? 0.82 : 1;
   return Math.min(ceiling, floor + progress * (ceiling - floor));
 }
 
@@ -428,7 +476,14 @@ function pickBestFour(moves: Move[], pokemon: Pokemon): Move[] {
   return picked;
 }
 
-async function loadMovesFor(
+/**
+ * Bir türün hareket setini kuralım.
+ *
+ * Dışa açık, çünkü trainer kadroları (`lib/game/trainerBattle.ts`) da aynı
+ * cetveli kullanmak zorunda: trainer'ın Pokémon'u vahşi olanla aynı kalite
+ * ölçeğinden geçmezse iki sistem birbirinden kayar.
+ */
+export async function loadMovesForSpecies(
   pokemon: Pokemon,
   level: number,
   quality: number,
@@ -455,7 +510,13 @@ async function loadMovesFor(
 }
 
 export interface CreateWildEnemyOptions {
-  /** Düşmanın level'ı buna göre belirlenir. */
+  /**
+   * Koşunun REFERANS SEVİYESİ — takımın ortalaması değil.
+   *
+   * `getReferenceLevel` ile hesaplanıyor (en yüksek %70 + ilk üçün ortalaması
+   * %30). Adı geriye dönük uyumluluk için `playerLevel` kaldı; anlamı
+   * değişti, o yüzden bu not duruyor.
+   */
   playerLevel: number;
   /** Düşmanın güç aralığı buna göre belirlenir (oyuncunun aktif Pokémon'unun BST'si). */
   playerBst: number;
@@ -482,6 +543,13 @@ export interface CreateWildEnemyOptions {
    * ölçekleniyor, sadece tür sabit.
    */
   speciesId?: number;
+  /**
+   * Hikâyenin bu act'te dayattığı en düşük seviye (bkz. `lib/game/league.ts`).
+   *
+   * Verilmezse 1: vahşi karşılaşmalar tamamen oyuncunun referansına göre
+   * ölçekleniyor, ki erken act'lerde istenen de bu.
+   */
+  storyMinimum?: number;
   random?: RandomFn;
 }
 
@@ -504,7 +572,13 @@ export async function createWildEnemy(
           options.speciesId,
           EVENT_FIGHT_PREMIUM,
         )
-      : getEnemyLevel(options.playerLevel, kind, random, tileIndex));
+      : getEnemyLevel(
+          options.playerLevel,
+          kind,
+          random,
+          tileIndex,
+          options.storyMinimum ?? 1,
+        ));
   const range = getBstRange(options.playerBst, tileIndex, kind);
   const quality = getMovesetQuality(kind, tileIndex);
   const iv = getEnemyIv(kind, tileIndex);
@@ -530,10 +604,19 @@ export async function createWildEnemy(
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const id =
       options.speciesId ??
-      pickEnemyId(range, random, themeType, guardAgainstTypes);
+      (tileIndex === 0 && kind === "wild"
+        ? pickFirstEncounterSpecies(random)
+        : pickEnemyId(range, random, themeType, guardAgainstTypes));
     try {
       const pokemon = await getPokemon(id);
-      const moves = await loadMovesFor(pokemon, level, quality);
+      const loadedMoves = await loadMovesForSpecies(pokemon, level, quality);
+      const openingMoves = loadedMoves.filter(isOpeningBattleMoveSafe).slice(0, 2);
+      const moves =
+        tileIndex === 0 && kind === "wild"
+          ? openingMoves.length > 0
+            ? openingMoves
+            : await getMoves([FALLBACK_MOVE_NAME])
+          : loadedMoves;
       return {
         pokemon,
         member: createTeamMember(pokemon, {

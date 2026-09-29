@@ -12,6 +12,12 @@
 
 import { getTypeEffectiveness } from "@/lib/data/typeChart";
 import type { RandomFn } from "@/lib/game/rng";
+import {
+  getAiProfile,
+  getDefaultProfile,
+  type AiProfile,
+  type AiProfileId,
+} from "./aiProfiles";
 import { estimateDamage } from "./damage";
 import { getUsableMoves } from "./engine";
 import { getMoveTrait } from "./moveTraits";
@@ -303,16 +309,68 @@ function scoreStatusMove(
   return score;
 }
 
+/**
+ * Profilin bu hamleye verdiği ağırlık.
+ *
+ * Hamle tek bir kategoriye sokuluyor: bir hamle hem hava kurup hem stat
+ * değiştirebiliyor, o yüzden sıra ÖNEMLİ — en ayırt edici özellik önce
+ * geliyor. Amaç hassas bir sınıflandırma değil, "bu profil böyle bir hamleyi
+ * sever mi" sorusuna tek bir çarpanla cevap vermek.
+ */
+function getProfileWeight(move: Move, profile: AiProfile): number {
+  if (move.category !== "status") return profile.damage;
+
+  const trait = getMoveTrait(move.name);
+
+  if (
+    trait?.weather !== undefined ||
+    trait?.terrain !== undefined ||
+    trait?.trickRoom === true
+  ) {
+    return profile.field;
+  }
+  if (
+    trait?.screen !== undefined ||
+    trait?.protect !== undefined ||
+    trait?.endure === true ||
+    trait?.rest === true ||
+    trait?.substitute === true ||
+    trait?.wish === true ||
+    trait?.aquaRing === true ||
+    move.meta.healing > 0
+  ) {
+    return profile.defensive;
+  }
+  if (
+    move.meta.ailment !== "none" ||
+    trait?.yawn === true ||
+    trait?.attract === true ||
+    trait?.taunt !== undefined ||
+    trait?.disable !== undefined ||
+    trait?.encore !== undefined
+  ) {
+    return profile.ailment;
+  }
+  if (move.statChanges.length > 0 || trait?.bellyDrum === true) {
+    return profile.boost;
+  }
+  return 1;
+}
+
 /** Bir hamlenin bu turdaki toplam puanı. */
 function scoreMove(
   state: BattleState,
   attacker: Combatant,
   defender: Combatant,
   move: Move,
+  profile: AiProfile,
 ): number {
-  return move.category === "status"
-    ? scoreStatusMove(state, attacker, defender, move)
-    : scoreDamagingMove(state, attacker, defender, move);
+  const base =
+    move.category === "status"
+      ? scoreStatusMove(state, attacker, defender, move)
+      : scoreDamagingMove(state, attacker, defender, move);
+
+  return base * getProfileWeight(move, profile);
 }
 
 /** Rakip bizi bu turda bayıltabilir mi? Kurulum yapmaya değer mi? */
@@ -329,6 +387,13 @@ function isUnderThreat(state: BattleState): boolean {
 export interface ChooseMoveOptions {
   /** 0 = tamamen rastgele, 1 = elinden gelenin en iyisi. */
   skill?: number;
+  /**
+   * Nasıl oynadığı (bkz. `lib/battle/aiProfiles.ts`).
+   *
+   * Verilmezse state'teki profil, o da yoksa ustalıktan türetilen varsayılan
+   * kullanılıyor — yani eski savaşlar birebir eskisi gibi davranıyor.
+   */
+  profile?: AiProfileId;
 }
 
 /**
@@ -346,6 +411,9 @@ export function chooseEnemyMove(
   const attacker = state.enemy;
   const defender = state.player;
   const skill = Math.max(0, Math.min(1, options.skill ?? state.enemySkill));
+  const profile = getAiProfile(
+    options.profile ?? state.enemyProfile ?? getDefaultProfile(skill),
+  );
 
   const usable = getUsableMoves(attacker);
   if (usable.length === 1) return usable[0];
@@ -356,7 +424,9 @@ export function chooseEnemyMove(
   );
   const pool = sensible.length > 0 ? sensible : usable;
 
-  const scores = pool.map((move) => scoreMove(state, attacker, defender, move));
+  const scores = pool.map((move) =>
+    scoreMove(state, attacker, defender, move, profile),
+  );
 
   // Usta AI bayılmak üzereyken kurulum yapmaz.
   if (skill >= 0.5 && isUnderThreat(state)) {
@@ -397,8 +467,14 @@ export function chooseEnemyMove(
         }
       }
     }
-    // Düşük ustalıkta öldürücü vuruşu bazen kaçırır.
-    if (bestKill >= 0 && random() < 0.4 + 0.6 * skill) return pool[bestKill];
+    // Düşük ustalıkta öldürücü vuruşu bazen kaçırır; profil bu istekliliği
+    // yukarı ya da aşağı çekiyor (hızlı hücumcu asla kaçırmaz).
+    if (
+      bestKill >= 0 &&
+      random() < Math.min(1, (0.4 + 0.6 * skill) * profile.killBias)
+    ) {
+      return pool[bestKill];
+    }
   }
 
   // Rastgele sapma: ustalık 0'da mainline'daki vahşi Pokémon gibi tamamen

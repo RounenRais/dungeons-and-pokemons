@@ -23,9 +23,16 @@ interface MainMenuProps {
   leaderboard: LeaderboardEntry[];
   /** Tablo paylaşılan sunucudan mı, sadece bu cihazdan mı geliyor? */
   leaderboardSource: LeaderboardSource;
+  /** Sunucudan gelen açıklama (kurulu değil / okunamadı). */
+  leaderboardMessage?: string | null;
+  /** Sunucuda daha satır var mı — "daha fazla göster" bunu kullanıyor. */
+  leaderboardHasMore?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: () => void;
   /** Az önce biten koşunun tablodaki satırı — varsa vurgulanıyor. */
   highlightId?: string | null;
   onPlay: () => void;
+  isStarting?: boolean;
   onHowToPlay: () => void;
 }
 
@@ -42,8 +49,13 @@ export function MainMenu({
   records,
   leaderboard,
   leaderboardSource,
+  leaderboardMessage = null,
+  leaderboardHasMore = false,
+  isLoadingMore = false,
+  onLoadMore,
   highlightId = null,
   onPlay,
+  isStarting = false,
   onHowToPlay,
 }: MainMenuProps) {
   return (
@@ -80,10 +92,11 @@ export function MainMenu({
           <button
             type="button"
             onClick={onPlay}
+            disabled={isStarting}
             autoFocus
-            className="w-full rounded-full bg-[var(--poke-red)] px-6 py-3.5 text-lg font-bold text-white shadow-md transition hover:brightness-110"
+            className="w-full rounded-full bg-[var(--poke-red)] px-6 py-3.5 text-lg font-bold text-white shadow-md transition hover:brightness-110 disabled:cursor-wait disabled:opacity-65"
           >
-            Start the adventure
+            {isStarting ? "Preparing a ranked run…" : "Start the adventure"}
           </button>
           <button
             type="button"
@@ -135,6 +148,10 @@ export function MainMenu({
         <Leaderboard
           entries={leaderboard}
           source={leaderboardSource}
+          message={leaderboardMessage}
+          hasMore={leaderboardHasMore}
+          isLoadingMore={isLoadingMore}
+          onLoadMore={onLoadMore}
           highlightId={highlightId}
         />
       </div>
