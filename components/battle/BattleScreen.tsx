@@ -201,11 +201,16 @@ export function BattleScreen({
   const [view, setView] = useState<ViewState>(() =>
     viewFromState(initialState),
   );
-  const [message, setMessage] = useState(
-    initialState.trainer !== undefined
-      ? `“${initialState.trainer.dialogue.intro}”`
-      : `A wild ${initialState.enemy.pokemon.displayName} appeared!`,
-  );
+  const [message, setMessage] = useState(() => {
+    // Giriş repliği yalnızca giriş sahnesi HENÜZ OYNAMADIYSA. Kaldığı yerden
+    // devam eden bir savaş "Ready?" ile değil, sıradaki kararla açılmalı.
+    if (initialState.trainer !== undefined) {
+      return initialState.trainerIntroComplete === true
+        ? "What will you do?"
+        : `“${initialState.trainer.dialogue.intro}”`;
+    }
+    return `A wild ${initialState.enemy.pokemon.displayName} appeared!`;
+  });
   const [log, setLog] = useState<string[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [hitSide, setHitSide] = useState<Side | null>(null);
@@ -344,10 +349,21 @@ export function BattleScreen({
   }, []);
 
   async function playEvents(events: BattleEvent[], resolved?: BattleState) {
+    /*
+     * Oynatma boyunca geçerli adlar.
+     *
+     * `names` render anındaki state'ten geliyor; trainer tur içinde Pokémon
+     * değiştirdiğinde o adlar eskiyor ve sonraki satırlar bayılmış Pokémon'un
+     * adıyla yazılıyordu. Bu kopya `enemy-switch` olayında güncelleniyor.
+     */
+    const activeNames = { ...names };
+
     for (const event of events) {
       if (!isMounted.current) return;
 
-      const text = describeEvent(event, names);
+      if (event.kind === "enemy-switch") activeNames.enemy = event.toName;
+
+      const text = describeEvent(event, activeNames);
       if (text !== null) {
         setMessage(text);
         setLog((entries) => [text, ...entries].slice(0, 30));

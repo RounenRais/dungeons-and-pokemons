@@ -434,8 +434,15 @@ export default function GamePage() {
     return (
       <main className="flex-1">
         <BattleScreen
-          // Remount for each new battle so the component state starts clean.
-          key={battle.enemy.member.instanceId}
+          /*
+           * Her YENİ savaş için sıfırdan kurulsun diye anahtarlanıyor.
+           *
+           * Anahtar savaşın kendi kimliği — sahadaki rakibin kimliği DEĞİL:
+           * trainer sıradaki Pokémon'unu sürdüğünde rakip kimliği değişiyor ve
+           * ekran savaşın ortasında remount oluyordu. `battleId` eski
+           * kayıtlarda yok, o yüzden rakip kimliğine düşüyoruz.
+           */
+          key={battle.battleId ?? battle.enemy.member.instanceId}
           initialState={battle}
           team={player.team}
           activeIndex={player.activeIndex}

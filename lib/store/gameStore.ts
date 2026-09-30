@@ -2313,6 +2313,19 @@ export const useGameStore = create<GameState>()(
           }
           if (typeof state.escapesUsed !== "number") state.escapesUsed = 0;
 
+          /*
+           * `battleId` sonradan eklendi. Yarıda kalmış eski bir savaş bu alan
+           * olmadan devam ederse, trainer sıradaki Pokémon'unu sürdüğünde
+           * savaş ekranı remount oluyor (bkz. `app/page.tsx`'teki anahtar).
+           * Eksikse burada bir kez veriliyor.
+           */
+          if (state.battle !== null && state.battle.battleId === undefined) {
+            state.battle = {
+              ...state.battle,
+              battleId: `battle-restored-${state.battle.enemy.member.instanceId}`,
+            };
+          }
+
           // Act asla ligin dışına taşmasın.
           state.act = Math.max(
             0,

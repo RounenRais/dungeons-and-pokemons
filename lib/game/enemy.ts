@@ -91,6 +91,17 @@ export function pickFirstEncounterSpecies(random: RandomFn): number {
   return pickOne(random, [...FIRST_ENCOUNTER_SPECIES_IDS]);
 }
 
+/**
+ * Açılış savaşının SABİT seviyesi.
+ *
+ * Yalnızca ilk kare (`tileIndex === 0`) için ve yalnızca vahşi karşılaşmada
+ * geçerli. Referans seviye formülü burada starter'ın level 5'ine göre 1-4
+ * arası bir şey veriyordu; oyuncunun daha hiçbir eşyası, yedeği ve hareket
+ * seçimi yokken bu bant bazen başa baş bir savaş çıkarıyordu. Öğretici
+ * savaşın sonucu şansa kalmasın diye seviye sabitlendi.
+ */
+export const FIRST_ENCOUNTER_LEVEL = 3;
+
 /** Tutorial fight: no status lottery, recoil, multi-hit spike, or heavy move. */
 export function isOpeningBattleMoveSafe(move: Move): boolean {
   return (
@@ -560,12 +571,17 @@ export async function createWildEnemy(
   const random = options.random ?? Math.random;
   const kind = options.kind ?? "wild";
 
+  // Açılış savaşı: tür, hareketler ve seviye sabit (bkz. FIRST_ENCOUNTER_LEVEL).
+  const isOpeningEncounter = tileIndex === 0 && kind === "wild";
+
   // Tür kart tarafından sabitlendiyse level formülü yetmiyor: BST'si düşük bir
   // tür (Aipom, Snorlax'ın karşısında) oyuncunun level'ında hiçbir direnç
   // göstermiyordu. Sabit türde dengeyi boss'lardaki gibi level taşıyor.
   const level =
     options.level ??
-    (options.speciesId !== undefined && kind !== "wild"
+    (isOpeningEncounter
+      ? FIRST_ENCOUNTER_LEVEL
+      : options.speciesId !== undefined && kind !== "wild"
       ? getScaledLevelForSpecies(
           options.playerLevel,
           options.playerBst,
@@ -604,7 +620,7 @@ export async function createWildEnemy(
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const id =
       options.speciesId ??
-      (tileIndex === 0 && kind === "wild"
+      (isOpeningEncounter
         ? pickFirstEncounterSpecies(random)
         : pickEnemyId(range, random, themeType, guardAgainstTypes));
     try {
@@ -612,7 +628,7 @@ export async function createWildEnemy(
       const loadedMoves = await loadMovesForSpecies(pokemon, level, quality);
       const openingMoves = loadedMoves.filter(isOpeningBattleMoveSafe).slice(0, 2);
       const moves =
-        tileIndex === 0 && kind === "wild"
+        isOpeningEncounter
           ? openingMoves.length > 0
             ? openingMoves
             : await getMoves([FALLBACK_MOVE_NAME])

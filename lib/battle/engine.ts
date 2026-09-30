@@ -198,6 +198,19 @@ export interface StartBattleArgs {
   arenaSeed?: number;
 }
 
+/**
+ * Savaşa sabit bir kimlik verir.
+ *
+ * `crypto.randomUUID` her yerde yok (eski tarayıcı, test koşucusu); o yüzden
+ * rakibin kimliğiyle birlikte bir sayaç/zaman damgası kullanılıyor. Tek şart
+ * benzersiz ve savaş boyunca sabit olması.
+ */
+let battleCounter = 0;
+function createBattleId(seedId: string): string {
+  battleCounter += 1;
+  return `battle-${seedId}-${Date.now().toString(36)}-${battleCounter}`;
+}
+
 export function startBattle({
   playerPokemon,
   playerMember,
@@ -217,6 +230,8 @@ export function startBattle({
 }: StartBattleArgs): BattleState {
   const canCapture = catchable ?? (!isTrainerBattle && !isBoss);
   return {
+    // Savaş boyunca sabit: arayüz savaş ekranını bununla anahtarlıyor.
+    battleId: createBattleId(enemyMember.instanceId),
     player: createCombatant("player", playerPokemon, playerMember),
     enemy: createCombatant("enemy", enemyPokemon, enemyMember),
     turn: 1,
@@ -2308,10 +2323,34 @@ function settleProtection(state: BattleState): void {
 }
 
 /**
+ * Aynı bayılma iki kez duyurulmasın.
+ *
+ * `checkOutcome` bir turda birkaç kez çağrılıyor (her hamleden sonra ve tur
+ * sonunda). Bayılan taraf sahada kaldığı sürece — yedek bekleyen trainer'ın
+ * Pokémon'u ya da zorunlu değişim bekleyen oyuncu — her çağrı aynı `faint`
+ * olayını tekrar üretiyordu; ekran da "X fainted!" satırını iki kez oynatıp
+ * sprite'ı yeniden düşürüyordu.
+ */
+function alreadyAnnounced(
+  events: readonly BattleEvent[],
+  kind: "faint" | "must-switch",
+  side?: Side,
+): boolean {
+  return events.some(
+    (event) =>
+      event.kind === kind && (side === undefined || (event as { side?: Side }).side === side),
+  );
+}
+
+/**
  * Bayılma ve savaş sonucu kontrolü.
  *
  * Oyuncunun Pokémon'u bayılsa bile savaşabilecek yedeği varsa savaş bitmez;
  * bunun yerine 'must-switch' olayı üretilir ve UI zorunlu değişimi açar.
+ *
+ * Trainer'ın yedeği de aynı mantıkla BURADA SAHAYA ÇIKMIYOR: bayılan Pokémon
+ * turun sonuna kadar sahada (0 HP'de) kalıyor, sıradaki `promoteEnemyReserve`
+ * ile turun en sonunda geliyor. Bkz. o fonksiyonun başlığı.
  */
 function checkOutcome(state: BattleState, events: BattleEvent[]): void {
   if (state.outcome !== "ongoing") return;
@@ -2338,47 +2377,86 @@ function checkOutcome(state: BattleState, events: BattleEvent[]): void {
   }
 
   if (state.enemy.currentHp <= 0) {
-    events.push({ kind: "faint", side: "enemy" });
+    if (!alreadyAnnounced(events, "faint", "enemy")) {
+      events.push({ kind: "faint", side: "enemy" });
+    }
 
-    // Trainer'ın kadrosu bitmediyse savaş bitmiyor: sıradaki Pokémon sahaya
-    // geliyor. Mainline'daki trainer savaşı tam olarak böyle akıyor.
-    const next = state.enemyTeam.shift();
-    if (next !== undefined) {
-      const fallenName =
-        state.enemy.member.nickname ?? state.enemy.pokemon.displayName;
-
-      state.enemy = createCombatant("enemy", next.pokemon, next.member);
-      // Sahadan çıkan Pokémon'un bıraktığı geçici etkiler onunla gidiyor;
-      // taraf etkileri (Reflect, Tailwind) ve hava kalıyor — mainline kuralı.
-      events.push({
-        kind: "enemy-switch",
-        fromName: fallenName,
-        toName: next.member.nickname ?? next.pokemon.displayName,
-        remaining: state.enemyTeam.length,
-        toHp: state.enemy.currentHp,
-        toMaxHp: state.enemy.maxHp,
-      });
+    // Trainer'ın kadrosu bitmediyse savaş bitmiyor. Yedek sahaya turun
+    // SONUNDA çıkıyor; burada sadece "henüz kazanılmadı" deyip düşüyoruz.
+    // `return` YOK: aynı turda oyuncu da bayılmış olabilir, o dal da işlenmeli.
+    if (state.enemyTeam.length === 0) {
+      state.outcome = "win";
+      if (state.catchable && !state.isTrainerBattle && state.captureResolution) {
+        state.captureResolution.phase = "subdued";
+      }
+      events.push({ kind: "outcome", result: "win" });
       return;
     }
-
-    state.outcome = "win";
-    if (state.catchable && !state.isTrainerBattle && state.captureResolution) {
-      state.captureResolution.phase = "subdued";
-    }
-    events.push({ kind: "outcome", result: "win" });
-    return;
   }
 
   if (state.player.currentHp <= 0) {
-    events.push({ kind: "faint", side: "player" });
+    if (!alreadyAnnounced(events, "faint", "player")) {
+      events.push({ kind: "faint", side: "player" });
+    }
 
     if (state.playerReserves > 0) {
-      events.push({ kind: "must-switch" });
+      if (!alreadyAnnounced(events, "must-switch")) {
+        events.push({ kind: "must-switch" });
+      }
       return;
     }
     state.outcome = "loss";
     events.push({ kind: "outcome", result: "loss" });
   }
+}
+
+/**
+ * Trainer sıradaki Pokémon'unu sahaya sürer — TURUN EN SONUNDA.
+ *
+ * ---------------------------------------------------------------------------
+ * NEDEN TUR SONUNDA, BAYILMA ANINDA DEĞİL
+ * ---------------------------------------------------------------------------
+ * Eskiden değişim `checkOutcome` içinde, bayılmanın olduğu anda oluyordu. Bu
+ * turun geri kalanını bozuyordu:
+ *
+ *  - Oyuncu önce vurup rakibi düşürdüğünde, sıra hâlâ rakipteydi: sahaya yeni
+ *    gelen Pokémon AYNI TUR bedava bir vuruş yapıyordu — üstelik BAYILAN
+ *    Pokémon için seçilmiş, kendi setinde olmayan bir hamleyle.
+ *  - Tur sonu hasarları (zehir, hava, Leech Seed) daha yeni gelmiş Pokémon'a
+ *    işliyordu.
+ *  - Ekran tarafında yeni rakip, turun geri kalanındaki olaylar oynanırken
+ *    hasar alıp HP'si "geri sarıyormuş" gibi görünüyordu.
+ *
+ * Mainline kuralı da bu: bayılan Pokémon'un yerine gelen, geldiği turda
+ * hareket etmez. Artık bayılan Pokémon 0 HP'de sahada kalıyor (bütün hamle ve
+ * tur sonu döngüleri `currentHp <= 0` olanı zaten atlıyor), ve yedek turun en
+ * sonunda, son olay olarak sahaya çıkıyor.
+ */
+function promoteEnemyReserve(
+  state: BattleState,
+  events: BattleEvent[],
+): void {
+  if (state.outcome !== "ongoing") return;
+  if (state.enemy.currentHp > 0) return;
+
+  const next = state.enemyTeam.shift();
+  if (next === undefined) return;
+
+  const fallenName =
+    state.enemy.member.nickname ?? state.enemy.pokemon.displayName;
+
+  // Sahadan çıkan Pokémon'un bıraktığı geçici etkiler onunla gidiyor;
+  // taraf etkileri (Reflect, Tailwind) ve hava kalıyor — mainline kuralı.
+  state.enemy = createCombatant("enemy", next.pokemon, next.member);
+
+  events.push({
+    kind: "enemy-switch",
+    fromName: fallenName,
+    toName: next.member.nickname ?? next.pokemon.displayName,
+    remaining: state.enemyTeam.length,
+    toHp: state.enemy.currentHp,
+    toMaxHp: state.enemy.maxHp,
+  });
 }
 
 // --- Oyuncu aksiyonu -------------------------------------------------------
@@ -2593,6 +2671,16 @@ export function executeTurn(
   }
 
   settleProtection(state);
+
+  /*
+   * Ve en son: trainer bayılan Pokémon'unun yerine sıradakini sürer.
+   *
+   * Turun BÜTÜN etkileri (hamleler, tur sonu hasarları, boss fazı) çözüldükten
+   * sonra çalışıyor, yani sahaya yeni gelen Pokémon geldiği turdan hiçbir şey
+   * yemiyor ve hiçbir şey yapmıyor — mainline'daki davranış.
+   */
+  promoteEnemyReserve(state, events);
+
   state.turn += 1;
   return { state, events };
 }

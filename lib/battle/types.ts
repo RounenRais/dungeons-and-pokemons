@@ -100,6 +100,18 @@ export interface TrainerBattleMeta {
 }
 
 export interface BattleState {
+  /**
+   * Bu savaşın kimliği — savaş boyunca DEĞİŞMEZ.
+   *
+   * Arayüz savaş ekranını bununla anahtarlıyor. Eskiden anahtar sahadaki
+   * rakibin `instanceId`siydi; trainer sıradaki Pokémon'unu sürdüğünde o
+   * kimlik değişiyor ve React bütün savaş ekranını sıfırdan kuruyordu (log
+   * siliniyor, mesaj kutusu trainer'ın giriş repliğine dönüyor, yerel takım
+   * durumu kayıttaki eski hâline geri sarıyordu).
+   *
+   * Eski kayıtlarda yok: çağıran taraf yoksa rakibin kimliğine düşüyor.
+   */
+  battleId?: string;
   player: Combatant;
   enemy: Combatant;
   /** 1'den başlayan tur sayacı. */
