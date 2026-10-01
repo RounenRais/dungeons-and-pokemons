@@ -115,3 +115,15 @@ export const TICKET_LIMIT: RateLimitOptions = {
   limit: 6,
   windowMs: 60_000,
 };
+
+/**
+ * Yerel aynaın içe aktarımı: on dakikada üç istek.
+ *
+ * `SUBMIT_LIMIT`'ten dar, çünkü bu tek seferlik bir işlem: oyuncu cihazındaki
+ * listeyi bir kez aktarıyor. Bir istek en fazla `LOCAL_LEADERBOARD_SIZE`
+ * satır taşıdığı için, üst sınır pencere başına 150 satır.
+ */
+export const IMPORT_LIMIT: RateLimitOptions = {
+  limit: 3,
+  windowMs: 10 * 60_000,
+};

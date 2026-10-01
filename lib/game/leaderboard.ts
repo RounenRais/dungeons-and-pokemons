@@ -52,8 +52,11 @@ export type {
 export const LEADERBOARD_SIZE = LEADERBOARD_PAGE_SIZE;
 
 const STORAGE_KEY = "pokerun:leaderboard";
+/** Global tabloya aktarıldığı bilinen yerel satırların kimlikleri. */
+const IMPORTED_KEY = "pokerun:leaderboard:imported";
 const API_PATH = "/api/leaderboard";
 const TICKET_PATH = "/api/leaderboard/run";
+const IMPORT_PATH = "/api/leaderboard/import";
 
 /** Tablonun nereden geldiği — arayüz bunu oyuncuya söylüyor. */
 export type LeaderboardSource = "global" | "local" | "unconfigured";
@@ -373,5 +376,118 @@ export async function submitRun(
       duplicate: false,
       rejection: "Offline — the run could not be sent to the leaderboard.",
     };
+  }
+}
+
+// --- Yerel aynayı global tabloya aktarma ------------------------------------
+//
+// Tablo kurulu değilken ya da okunamazken bitirilen koşular yerel aynada
+// mahsur kalıyor: oyuncu kendi koşusunu görüyor, başka kimse görmüyor. Tablo
+// sonradan çalışmaya başladığında bunları kurtarmanın yolu bu.
+//
+// Aktarma OTOMATİK DEĞİL, düğmeyle: oyuncunun adı ve koşuları herkese açık bir
+// listeye gidiyor, bu sessizce olmamalı. Uç tarafındaki takaslar
+// `app/api/leaderboard/import/route.ts` başında yazılı.
+
+/** Aktarıldığı bilinen kimlikler. Bozuk kayıtta boş küme dönüyor. */
+function readImportedIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(IMPORTED_KEY);
+    if (raw === null) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    return new Set(
+      Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string") : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function markImported(ids: string[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    const next = readImportedIds();
+    for (const id of ids) next.add(id);
+    // Yerel ayna en fazla LOCAL_LEADERBOARD_SIZE satır tuttuğu için bu küme de
+    // sınırsız büyümüyor; yine de eski kimlikler birikmesin diye kırpılıyor.
+    const trimmed = [...next].slice(-LOCAL_LEADERBOARD_SIZE * 4);
+    window.localStorage.setItem(IMPORTED_KEY, JSON.stringify(trimmed));
+  } catch {
+    // Kota dolu: aktarma yine çalıştı, sadece düğme bir kez daha görünecek.
+    // Uç idempotent olduğu için tekrar göndermek kopya satır oluşturmuyor.
+  }
+}
+
+/** Henüz global tabloya aktarılmamış yerel koşular. */
+export function pendingLocalRuns(): LeaderboardEntry[] {
+  const imported = readImportedIds();
+  return readLeaderboard().filter((entry) => !imported.has(entry.id));
+}
+
+export interface ImportResult extends LeaderboardView {
+  /** Tabloya gerçekten yazılan satır sayısı. */
+  imported: number;
+  /** Gönderilip yazılmayanlar: geçersiz ya da tabloda zaten vardı. */
+  skipped: number;
+  /** Aktarma hiç yapılamadıysa sebebi. */
+  rejection: string | null;
+}
+
+/**
+ * Bekleyen yerel koşuları global tabloya gönderir.
+ *
+ * Başarılıysa gönderilen TÜM kimlikler "aktarıldı" diye işaretleniyor —
+ * yazılmayanlar dahil, çünkü onlar ya tabloda zaten var ya da geçersiz; iki
+ * durumda da tekrar denemenin faydası yok ve düğmenin sonsuza kadar görünmesi
+ * anlamsız olurdu.
+ */
+export async function importLocalRuns(): Promise<ImportResult> {
+  const pending = pendingLocalRuns();
+
+  if (pending.length === 0) {
+    const view = await fetchLeaderboard();
+    return { ...view, imported: 0, skipped: 0, rejection: null };
+  }
+
+  const fail = async (rejection: string): Promise<ImportResult> => ({
+    ...(await fetchLeaderboard()),
+    imported: 0,
+    skipped: pending.length,
+    rejection,
+  });
+
+  try {
+    const response = await fetch(IMPORT_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ runs: pending }),
+    });
+    const payload = (await response.json()) as ApiPayload & {
+      imported?: unknown;
+      skipped?: unknown;
+    };
+
+    if (!response.ok || payload.configured !== true) {
+      return await fail(
+        readMessage(payload) ?? "The runs could not be imported right now.",
+      );
+    }
+
+    markImported(pending.map((entry) => entry.id));
+
+    const entries = parseEntries(payload.entries);
+    return {
+      entries,
+      source: "global",
+      total: readNumber(payload.total, entries.length),
+      hasMore: payload.hasMore === true,
+      message: null,
+      imported: readNumber(payload.imported, 0),
+      skipped: readNumber(payload.skipped, 0),
+      rejection: null,
+    };
+  } catch {
+    return await fail("Offline — the runs could not be imported.");
   }
 }

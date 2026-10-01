@@ -34,6 +34,13 @@ create table if not exists public.leaderboard (
   finished_at   bigint  not null,
   created_at    timestamptz not null default now(),
 
+  -- Satır, koşu biletiyle mi geldi yoksa cihazdaki yerel aynadan sonradan mı
+  -- aktarıldı? İçe aktarılan satırların biletl(er)i yok (bkz.
+  -- app/api/leaderboard/import/route.ts), yani güven seviyesi daha düşük.
+  -- Sıralamayı etkilemiyor; ama "bunlar nereden geldi" sorusunun tabloda bir
+  -- cevabı olsun diye tutuluyor ve gerekirse toplu silinebiliyor.
+  imported      boolean not null default false,
+
   -- Sıra kuralları veritabanı seviyesinde de duruyor: uygulama katmanı
   -- atlanırsa (elle insert, başka bir istemci) tablo yine tutarlı kalıyor.
   constraint leaderboard_elite_needs_badges
@@ -44,6 +51,12 @@ create table if not exists public.leaderboard (
     check (trainer_wins >= badges + elite_four + (case when champion then 1 else 0 end))
 );
 
+-- `create table if not exists` var olan bir tabloya kolon EKLEMİYOR. Bu dosyanın
+-- `imported` kolonundan önceki bir sürümünü çalıştırmış bir kurulum da
+-- güncellenebilsin diye kolon ayrıca ekleniyor.
+alter table public.leaderboard
+  add column if not exists imported boolean not null default false;
+
 -- Tablonun birincil sıralaması. `compareEntries` ile birebir aynı sıra.
 create index if not exists leaderboard_rank_idx
   on public.leaderboard (score desc, badges desc, best_level desc, depth desc, finished_at asc);
@@ -52,3 +65,9 @@ create index if not exists leaderboard_rank_idx
 -- kimse okuyup yazamıyor. Sadece service_role kullanan API route erişiyor ve
 -- doğrulama orada yapılıyor. Düz PostgreSQL'de bu satır zararsız.
 alter table public.leaderboard enable row level security;
+
+-- Supabase REST (PostgREST) şemayı önbelleğe alıyor. Tablo yeni açıldığında
+-- önbellek tazelenene kadar `/rest/v1/leaderboard` "Could not find the table
+-- 'public.leaderboard' in the schema cache" (PGRST205) dönebiliyor. Bu satır
+-- tazelemeyi hemen tetikliyor; düz PostgreSQL'de zararsız.
+notify pgrst, 'reload schema';

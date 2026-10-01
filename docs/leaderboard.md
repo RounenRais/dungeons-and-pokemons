@@ -46,6 +46,37 @@ skorları yazılamıyor.
 3. Hiçbiri yok → **geliştirmede** süreç içi liste (`storage: "memory"`,
    yeniden başlatmada silinir), **production'da** tablo kapalı.
 
+(1) seçilirken bağlantı bir kez `select 1` ile sınanıyor. Ulaşılamıyorsa
+(2)'ye düşülüyor: yanlış ya da erişilemez bir `DATABASE_URL`, REST yolu
+çalışır durumdayken tüm tabloyu 502'ye düşürmesin diye.
+
+### `getaddrinfo ENOTFOUND db.<ref>.supabase.co`
+
+Yayına aldıktan sonra `/api/leaderboard` 502 dönüyor ve sunucu günlüğünde bu
+hata varsa sebebi şu: Supabase'in **doğrudan** bağlantı adresi
+(`db.<ref>.supabase.co`) yalnızca **AAAA (IPv6)** kaydı yayınlıyor, A (IPv4)
+kaydı yok. Vercel'in serverless fonksiyonları gibi IPv4-only ortamlar bu adı
+çözemiyor. Yerelde çalışıp yayında çalışmamasının nedeni de bu — ev
+bağlantılarının çoğunda IPv6 var.
+
+İki çözümü var:
+
+- **Kolay:** Barındırma sağlayıcısındaki `DATABASE_URL` değişkenini **sil**.
+  `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` duruyorsa tablo REST üzerinden
+  çalışır; o yol düz HTTPS olduğu için her yerden erişilebilir.
+- **Postgres sürücüsü şart ise:** doğrudan adres yerine **Supavisor havuz**
+  adresini kullan. Supabase paneli → Project Settings → Database →
+  Connection string → **Transaction pooler**. Biçimi doğrudan bağlantıdan
+  farklı — kullanıcı adı proje referansını içeriyor ve port 6543:
+
+  ```
+  postgresql://postgres.<ref>:<ŞIFRE>@aws-0-<region>.pooler.supabase.com:6543/postgres
+  ```
+
+  Bu ad IPv4'ten çözülüyor ve serverless için zaten önerilen yöntem (her
+  çağrı yeni bağlantı açmıyor). Şifrede `@ : / ?` gibi karakterler varsa
+  URL-encode etmeyi unutma.
+
 ## Puanlama
 
 Puan `lib/game/score.ts` içinde, tek bir fonksiyonda:

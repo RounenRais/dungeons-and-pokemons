@@ -36,7 +36,8 @@
     "check:map": "npx --yes tsx scripts/check-map-wild.mts",
     "check:catching": "npx --yes tsx scripts/check-catching.mts",
     "check:trainers": "npx --yes tsx scripts/check-trainer-battles.mts",
-    "smoke:full-run": "npx --yes tsx scripts/smoke-full-run.mts"
+    "smoke:full-run": "npx --yes tsx scripts/smoke-full-run.mts",
+    "db:leaderboard": "npx --yes tsx scripts/apply-leaderboard-migration.mts"
   },
   "dependencies": {
     "@types/pg": "^8.23.1",
