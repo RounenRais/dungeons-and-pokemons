@@ -127,3 +127,16 @@ export const IMPORT_LIMIT: RateLimitOptions = {
   limit: 3,
   windowMs: 10 * 60_000,
 };
+
+/**
+ * Ad sahiplenme / değiştirme: on dakikada beş istek.
+ *
+ * Dar olmak zorunda. Bu uç "bu ad boş mu?" sorusuna cevap veriyor, yani
+ * sınırsız bırakılırsa tablodaki bütün adları tek tek deneyerek listeleyen bir
+ * araca dönüşür. Beş istek meşru kullanım için fazlasıyla yeterli: oyuncu adını
+ * bir kez koyuyor, nadiren değiştiriyor.
+ */
+export const NAME_LIMIT: RateLimitOptions = {
+  limit: 5,
+  windowMs: 10 * 60_000,
+};

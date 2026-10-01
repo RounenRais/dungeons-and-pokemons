@@ -9,7 +9,12 @@ import {
   EXP_SHARE_RATE,
   getMovesLearnedAtLevels,
 } from "./leveling";
-import { rollReward, type Reward } from "./rewards";
+import {
+  calculateGoldReward,
+  isRewardMoveTooStrong,
+  rollReward,
+  type Reward,
+} from "./rewards";
 import { createRunModifiers, type RunModifiers } from "./modifiers";
 import { calculateMaxHp } from "./stats";
 import { createTeamMember } from "./team";
@@ -430,10 +435,14 @@ export async function resolveVictory(
   ).map((move) => ({ move, source: "level-up" as const }));
 
   // Ödül
-  const reward = rollReward(random, {
+  let reward = rollReward(random, {
     tileIndex,
     isBoss,
     pokemon: currentPokemon,
+    // Evrim ve level atlama ZATEN uygulandı: ödül havuzu bu savaştan SONRAKİ
+    // level'ı görmeli, yoksa bu savaşta açılan hareketler bir sonraki ödüle
+    // kalırdı.
+    level: currentMember.level,
     knownMoveIds: [
       ...knownMoveIds,
       ...pendingMoves.map((pending) => pending.move.id),
@@ -442,7 +451,22 @@ export async function resolveVictory(
 
   if (reward.kind === "move") {
     const [rewardMove] = await getMoves([reward.moveId]);
-    pendingMoves.push({ move: rewardMove, source: "reward" });
+    if (isRewardMoveTooStrong(rewardMove, currentMember.level)) {
+      /*
+       * Bu level için fazla güçlü — ödül altına düşüyor.
+       *
+       * Eleme havuzda değil BURADA yapılıyor çünkü bir hareketin gücü ancak
+       * hareket çekilince biliniyor: learnset yalnızca kimlik ve öğrenme
+       * yöntemi taşıyor. Havuzu güce göre süzmek her savaş sonunda onlarca
+       * ek PokeAPI isteği demekti; tek adayı çekip reddetmek bir istek.
+       */
+      reward = {
+        kind: "gold",
+        amount: calculateGoldReward(tileIndex, isBoss, random),
+      };
+    } else {
+      pendingMoves.push({ move: rewardMove, source: "reward" });
+    }
   }
 
   const catchTarget = await buildCatchTarget(args);

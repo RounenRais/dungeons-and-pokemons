@@ -18,10 +18,11 @@
 import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 
-const MIGRATION = new URL(
-  "../db/migrations/0001_leaderboard.sql",
-  import.meta.url,
-);
+/** Sırayla uygulanıyor: 0001 tabloyu açıyor, 0002 oyuncu modeline çeviriyor. */
+const MIGRATIONS = [
+  "0001_leaderboard.sql",
+  "0002_leaderboard_players.sql",
+].map((file) => new URL(`../db/migrations/${file}`, import.meta.url));
 
 // .env.local'i elle oku: bu script Next.js dışında çalışıyor, yani Next'in
 // otomatik env yüklemesi devrede değil.
@@ -50,21 +51,25 @@ async function applySchema(url: string): Promise<void> {
   });
 
   try {
-    // Dosya tekrar çalıştırılabilir (her ifade IF NOT EXISTS), yani tek
-    // parçada göndermek güvenli.
-    await pool.query(readFileSync(MIGRATION, "utf8"));
+    // Dosyalar tekrar çalıştırılabilir, yani tek parçada göndermek güvenli.
+    for (const migration of MIGRATIONS) {
+      await pool.query(readFileSync(migration, "utf8"));
+      console.log(`PASS  uygulandı: ${migration.pathname.split("/").pop()}`);
+    }
     const { rows } = await pool.query<{ count: string }>(
-      "select count(*)::text as count from public.leaderboard",
+      "select count(*)::text as count from public.leaderboard where run_id is not null",
     );
-    console.log(`PASS  şema uygulandı — tabloda ${rows[0].count} satır var`);
+    console.log(`PASS  şema güncel — tabloda ${rows[0].count} oyuncu var`);
   } finally {
     await pool.end();
   }
 }
 
 async function probeRest(url: string, key: string): Promise<boolean> {
+  // `player_id` seçiliyor: 0002 uygulanmadıysa bu kolon yok ve istek
+  // başarısız oluyor — yani bu sorgu aynı zamanda "şema güncel mi" sorusu.
   const response = await fetch(
-    `${url.replace(/\/+$/, "")}/rest/v1/leaderboard?select=id&limit=1`,
+    `${url.replace(/\/+$/, "")}/rest/v1/leaderboard?select=player_id,name,score&limit=1`,
     {
       headers: { apikey: key, Authorization: `Bearer ${key}` },
       cache: "no-store",
@@ -72,7 +77,7 @@ async function probeRest(url: string, key: string): Promise<boolean> {
   );
 
   if (response.ok) {
-    console.log("PASS  Supabase REST yolu tabloyu okuyabiliyor");
+    console.log("PASS  Supabase REST yolu tabloyu okuyabiliyor (şema güncel)");
     return true;
   }
 
@@ -80,8 +85,13 @@ async function probeRest(url: string, key: string): Promise<boolean> {
   console.log(`FAIL  Supabase REST okuması ${response.status}: ${body.slice(0, 200)}`);
   if (body.includes("PGRST205")) {
     console.log(
-      "      → Tablo yok. Şemayı uygula: Supabase → SQL Editor →\n" +
-        "        db/migrations/0001_leaderboard.sql içeriğini yapıştır → Run.",
+      "      → Tablo yok. Supabase → SQL Editor → supabase-leaderboard.txt\n" +
+        "        içeriğini yapıştır → Run.",
+    );
+  } else if (body.includes("player_id")) {
+    console.log(
+      "      → Tablo var ama ESKİ şemada (oyuncu başına satir değil).\n" +
+        "        Supabase → SQL Editor → supabase-leaderboard.txt → Run.",
     );
   }
   return false;

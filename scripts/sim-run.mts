@@ -461,6 +461,7 @@ async function simulateRun(seed: number): Promise<RunReport> {
       tileIndex: position,
       isBoss,
       pokemon,
+      level: member.level,
       knownMoveIds: member.moves.map((move) => move.id),
     });
     if (reward.kind === 'gold') {

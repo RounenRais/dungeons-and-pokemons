@@ -202,10 +202,28 @@ const NODE_QUOTA_SHARE: Partial<Record<MapNodeType, number>> = {
   TRAINER_BATTLE: 0.32,
 };
 
+/**
+ * Kota tabanı: payı küçük olan bir tip kısa bir act'te sıfıra yuvarlanıp
+ * haritadan tamamen düşmesin diye.
+ *
+ * `CASINO` istisna ve tabanı 1. Taban herkes için 2 olduğunda bir act'e iki
+ * Game Corner çizilebiliyordu, oysa `canEnterCasino` act başına TEK ziyarete
+ * izin veriyor (lib/game/casinoState.ts): ikinci kapı tıklanınca açılmıyor,
+ * sadece günlüğe bir satır düşüyordu — oyuncuya bozuk bir düğüm gibi
+ * görünen şey buydu. Kural tek ziyaretse harita da tek kapı çizmeli.
+ */
+const NODE_QUOTA_MIN: Partial<Record<MapNodeType, number>> = { CASINO: 1 };
+
+const DEFAULT_QUOTA_MIN = 2;
+
 function buildQuotas(totalNodes: number): Partial<Record<MapNodeType, number>> {
   const quotas: Partial<Record<MapNodeType, number>> = {};
   for (const [type, share] of Object.entries(NODE_QUOTA_SHARE)) {
-    quotas[type as MapNodeType] = Math.max(2, Math.round(totalNodes * share));
+    const key = type as MapNodeType;
+    quotas[key] = Math.max(
+      NODE_QUOTA_MIN[key] ?? DEFAULT_QUOTA_MIN,
+      Math.round(totalNodes * share),
+    );
   }
   return quotas;
 }

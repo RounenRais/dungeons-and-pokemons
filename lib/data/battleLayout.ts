@@ -88,12 +88,27 @@ export const BATTLE_LAYOUT = {
   playerPanel: { right: "4%", top: "67%" },
 } as const;
 
-/** Where an attack from `attacker` starts and lands. */
-export function getAttackPath(attacker: "player" | "enemy"): {
+/**
+ * Where an attack from `attacker` starts and lands.
+ *
+ * `trainerBattle` is not optional decoration: a trainer's Pokemon stands at
+ * `trainerEnemySprite` (x 61), not at `enemySprite` (x 72.9), because the
+ * trainer's own body sprite occupies the right of the far platform. Reading
+ * the wild anchor in a trainer battle put every effect ~12% of the arena to
+ * the right of the creature it was meant to hit.
+ */
+export function getAttackPath(
+  attacker: "player" | "enemy",
+  trainerBattle = false,
+): {
   from: Point;
   to: Point;
 } {
-  const enemy = BATTLE_LAYOUT.enemySprite.hit;
+  const enemy = (
+    trainerBattle
+      ? BATTLE_LAYOUT.trainerEnemySprite
+      : BATTLE_LAYOUT.enemySprite
+  ).hit;
   const player = BATTLE_LAYOUT.playerSprite.hit;
   return attacker === "player"
     ? { from: player, to: enemy }

@@ -47,8 +47,16 @@ export interface LeaderboardPage {
 }
 
 export interface WriteResult {
-  /** Satır bu çağrıda yazıldı mı? false = aynı runId zaten vardı. */
-  inserted: boolean;
+  /**
+   * Satır bu çağrıda yazıldı ya da güncellendi mi?
+   *
+   * `false` = oyuncunun tablodaki skoru zaten bu koşudan iyiydi. Hata değil:
+   * tablo oyuncu başına EN İYİ koşuyu tutuyor, daha kötü bir koşu onu
+   * düşürmemeli.
+   */
+  improved: boolean;
+  /** Ad başka bir oyuncunun üstünde — satır yazılmadı. */
+  nameTaken: boolean;
 }
 
 export interface BatchWriteResult {
@@ -56,29 +64,50 @@ export interface BatchWriteResult {
   inserted: number;
 }
 
+/** Ad sahiplenme / değiştirme sonucu. */
+export interface NameClaimResult {
+  ok: boolean;
+  /** Ad başka bir oyuncunun. */
+  taken: boolean;
+}
+
 export interface LeaderboardStore {
   kind: StorageKind;
   readPage(limit: number, offset: number): Promise<LeaderboardPage>;
-  /** Aynı `runId` ikinci kez gelirse yazmaz ve `inserted: false` döner. */
+  /**
+   * Oyuncunun satırını yazar — oyuncu başına TEK satır.
+   *
+   * Aynı oyuncudan daha iyi bir koşu gelirse satır güncelleniyor, yenisi
+   * eklenmiyor. Daha kötü bir koşu geldiğinde hiçbir şey değişmiyor ve
+   * `improved: false` dönüyor.
+   */
   write(entry: LeaderboardEntry): Promise<WriteResult>;
+  /**
+   * Adı bu oyuncuya bağlar; oyuncunun satırı varsa adını değiştirir.
+   *
+   * Ad değişikliği satırı YERİNDE güncellediği için oyuncunun geçmiş skoru da
+   * yeni adı gösteriyor ve eski ad serbest kalıyor — "tek kimlik, tek isim".
+   *
+   * `legacy:` ile başlayan kimlikler devredilebiliyor: onlar bu kimlik şeması
+   * gelmeden önce yazılmış satırlar ve hiçbir cihaza ait değiller (bkz.
+   * db/migrations/0002_leaderboard_players.sql).
+   */
+  claimName(playerId: string, name: string): Promise<NameClaimResult>;
   /**
    * Cihazdaki yerel aynadan içe aktarılan satırları yazar.
    *
    * `write`'tan AYRI bir metot olması bilinçli: bu satırların koşu bileti
    * yok (bkz. app/api/leaderboard/import/route.ts), yani güven seviyeleri
-   * farklı ve tabloda `imported = true` olarak işaretleniyorlar. İki yolu aynı
-   * metoda toplamak bu ayırımı görünmez kılardı.
-   *
-   * Zaten var olan kimlikler sessizce atlanıyor, yani tekrar çağırmak
-   * güvenli (idempotent).
+   * farklı ve tabloda `imported = true` olarak işaretleniyorlar.
    */
   writeImported(entries: LeaderboardEntry[]): Promise<BatchWriteResult>;
 }
 
-/** İçe aktarma satırlarının kolon sırası — iki sürücü de bunu kullanıyor. */
+/** Satırların kolon sırası — iki sürücü de bunu kullanıyor. */
 const WRITE_COLUMNS = [
-  "id",
+  "player_id",
   "name",
+  "run_id",
   "score",
   "best_level",
   "badges",
@@ -91,13 +120,14 @@ const WRITE_COLUMNS = [
   "imported",
 ] as const;
 
-function entryToValues(
-  entry: LeaderboardEntry,
-  imported: boolean,
-): unknown[] {
+/** `on conflict do update` ile tazelenen kolonlar — kimlik hariç hepsi. */
+const UPDATE_COLUMNS = WRITE_COLUMNS.filter((col) => col !== "player_id");
+
+function entryToValues(entry: LeaderboardEntry, imported: boolean): unknown[] {
   return [
     entry.id,
     entry.name,
+    entry.runId,
     entry.score,
     entry.bestLevel,
     entry.badges,
@@ -119,12 +149,27 @@ function entryToRow(
   return Object.fromEntries(WRITE_COLUMNS.map((col, i) => [col, values[i]]));
 }
 
+/** Postgres'in benzersizlik ihlali kodu — ad çakışması buradan anlaşılıyor. */
+const UNIQUE_VIOLATION = "23505";
+
+function isNameConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === UNIQUE_VIOLATION;
+}
+
+/** Devredilebilir kimlik: 0002 öncesinden taşınmış, sahibi olmayan satır. */
+function isLegacyId(playerId: string): boolean {
+  return playerId.startsWith("legacy:");
+}
+
 const TABLE = "leaderboard";
 
 /** Satır alanları snake_case; istemci camelCase bekliyor. */
 interface LeaderboardRow {
-  id: string;
+  player_id: string;
   name: string;
+  run_id: string | null;
   score: number;
   best_level: number;
   badges: number;
@@ -136,9 +181,17 @@ interface LeaderboardRow {
   finished_at: string | number;
 }
 
+/** Okunan kolonlar — iki sürücü de aynı listeyi kullanıyor. */
+const READ_COLUMNS = WRITE_COLUMNS.filter((col) => col !== "imported");
+
+/** Sıralama: `compareEntries` ile birebir aynı. */
+const ORDER_SQL =
+  "score desc, badges desc, best_level desc, depth desc, finished_at asc";
+
 function rowToRaw(row: LeaderboardRow): Record<string, unknown> {
   return {
-    id: row.id,
+    id: row.player_id,
+    runId: row.run_id ?? "",
     name: row.name,
     bestLevel: Number(row.best_level),
     badges: Number(row.badges),
@@ -241,16 +294,48 @@ async function getPool(url: string): Promise<PgPool | null> {
 
 function createPostgresStore(url: string, pg: PgPool): LeaderboardStore {
   void url;
+
+  const upsert = async (
+    entry: LeaderboardEntry,
+    imported: boolean,
+  ): Promise<WriteResult> => {
+    const assignments = UPDATE_COLUMNS.map(
+      (col) => `${col} = excluded.${col}`,
+    ).join(", ");
+
+    try {
+      /*
+       * Tek ifadede "ekle ya da DAHA İYİYSE güncelle".
+       *
+       * `where excluded.score > leaderboard.score` olmadan bir oyuncunun kötü
+       * bir koşusu kendi rekorunu siliyordu. Devir (`legacy:`) satırları da
+       * burada yakalanmıyor; onlar `claimName` üzerinden sahipleniliyor.
+       */
+      const result = await pg.query(
+        `insert into ${TABLE} (${WRITE_COLUMNS.join(", ")})
+         values (${WRITE_COLUMNS.map((_, i) => `$${i + 1}`).join(",")})
+         on conflict (player_id) do update
+            set ${assignments}, updated_at = now()
+          where excluded.score > ${TABLE}.score
+         returning player_id`,
+        entryToValues(entry, imported),
+      );
+      return { improved: (result.rowCount ?? 0) > 0, nameTaken: false };
+    } catch (error) {
+      // Ad başkasının: benzersiz indeks ihlali. Hata değil, cevap.
+      if (isNameConflict(error)) return { improved: false, nameTaken: true };
+      throw error;
+    }
+  };
+
   return {
     kind: "postgres",
     async readPage(limit, offset) {
       const result = await pg.query(
-        `select id, name, score, best_level, badges, elite_four, champion,
-                trainer_wins, depth, difficulty, finished_at,
-                count(*) over () as total
+        `select ${READ_COLUMNS.join(", ")}, count(*) over () as total
            from ${TABLE}
-          order by score desc, badges desc, best_level desc, depth desc,
-                   finished_at asc
+          where run_id is not null
+          order by ${ORDER_SQL}
           limit $1 offset $2`,
         [limit, offset],
       );
@@ -263,35 +348,65 @@ function createPostgresStore(url: string, pg: PgPool): LeaderboardStore {
         total: rows.length > 0 ? Number(rows[0].total) : 0,
       };
     },
-    async write(entry) {
-      // `on conflict do nothing` = aynı isteğin iki kez kaydedilmesi engellendi.
-      const result = await pg.query(
-        `insert into ${TABLE} (${WRITE_COLUMNS.join(", ")})
-         values (${WRITE_COLUMNS.map((_, i) => `$${i + 1}`).join(",")})
-         on conflict (id) do nothing`,
-        entryToValues(entry, false),
+
+    write: (entry) => upsert(entry, false),
+
+    async claimName(playerId, name) {
+      // Adı şu an kim tutuyor?
+      const owner = await pg.query(
+        `select player_id from ${TABLE} where lower(name) = lower($1)`,
+        [name],
       );
-      return { inserted: (result.rowCount ?? 0) > 0 };
+      const current = owner.rows[0] as { player_id: string } | undefined;
+
+      if (current !== undefined && current.player_id !== playerId) {
+        // Devredilebilir eski satır: sahiplen, skoru da bu oyuncuya geçsin.
+        if (!isLegacyId(current.player_id)) {
+          return { ok: false, taken: true };
+        }
+        await pg.query(
+          `update ${TABLE} set player_id = $1, updated_at = now()
+            where player_id = $2`,
+          [playerId, current.player_id],
+        );
+        return { ok: true, taken: false };
+      }
+
+      try {
+        // Oyuncunun satırı varsa adı yerinde değişiyor: geçmiş skoru da yeni
+        // adı gösteriyor ve eski ad serbest kalıyor.
+        const renamed = await pg.query(
+          `update ${TABLE} set name = $1, updated_at = now()
+            where player_id = $2`,
+          [name, playerId],
+        );
+        if ((renamed.rowCount ?? 0) > 0) return { ok: true, taken: false };
+
+        // Hiç satırı yok: adı rezerve eden boş bir satır açılıyor. `run_id`
+        // NULL olduğu için tabloda görünmüyor (bkz. readPage).
+        await pg.query(
+          `insert into ${TABLE}
+             (player_id, name, run_id, score, best_level, badges, elite_four,
+              champion, trainer_wins, depth, difficulty, finished_at)
+           values ($1, $2, null, 0, 0, 0, 0, false, 0, 0, 'normal', $3)`,
+          [playerId, name, Date.now()],
+        );
+        return { ok: true, taken: false };
+      } catch (error) {
+        if (isNameConflict(error)) return { ok: false, taken: true };
+        throw error;
+      }
     },
+
     async writeImported(entries) {
-      if (entries.length === 0) return { inserted: 0 };
-
-      // Tek turda çok satır: her satır için bir yer tutucu demeti üretiliyor.
-      const width = WRITE_COLUMNS.length;
-      const tuples = entries
-        .map(
-          (_, row) =>
-            `(${WRITE_COLUMNS.map((_, col) => `$${row * width + col + 1}`).join(",")})`,
-        )
-        .join(",");
-
-      const result = await pg.query(
-        `insert into ${TABLE} (${WRITE_COLUMNS.join(", ")})
-         values ${tuples}
-         on conflict (id) do nothing`,
-        entries.flatMap((entry) => entryToValues(entry, true)),
-      );
-      return { inserted: result.rowCount ?? 0 };
+      let inserted = 0;
+      // Satır sayısı az (en fazla LOCAL_LEADERBOARD_SIZE) ve her biri aynı
+      // "daha iyiyse güncelle" kuralından geçmek zorunda, o yüzden tek tek.
+      for (const entry of entries) {
+        const result = await upsert(entry, true);
+        if (result.improved) inserted += 1;
+      }
+      return { inserted };
     },
   };
 }
@@ -315,44 +430,79 @@ function createSupabaseStore(url: string, key: string): LeaderboardStore {
       cache: "no-store",
     });
 
+  /** Tek satır çeker; yoksa null. */
+  const findOne = async (
+    query: string,
+  ): Promise<LeaderboardRow | null> => {
+    const response = await call(
+      `${TABLE}?select=${READ_COLUMNS.join(",")}&${query}&limit=1`,
+    );
+    if (!response.ok) {
+      throw new Error(`Supabase read failed (${response.status})`);
+    }
+    const rows = (await response.json()) as LeaderboardRow[];
+    return rows[0] ?? null;
+  };
+
   /**
-   * Satır(lar)ı yazar ve GERÇEKTEN yazılanları döndürür.
+   * Satırı yazar ya da günceller.
    *
-   * `resolution=ignore-duplicates` çakışmayı hataya çevirmiyor, sessizce
-   * atlıyor; `return=representation` ise yalnızca yazılan satırları geri
-   * veriyor. Yani dönen dizinin boyu "kaç tanesi yeniydi" sorusunun cevabı.
+   * PostgREST'te "sadece skor daha iyiyse güncelle" diye bir koşul yok, o
+   * yüzden karar BURADA veriliyor: önce oyuncunun satırı okunuyor, sonra
+   * gerekiyorsa yazılıyor. Her oyuncu yalnızca kendi satırını yazdığı için
+   * aradaki yarış penceresi pratikte sorun değil — ve iki taraf da aynı
+   * koşuyu yazsa sonuç yine aynı satır olurdu.
    */
-  const insert = async (
-    rows: Record<string, unknown>[],
-  ): Promise<unknown[]> => {
-    const response = await call(TABLE, {
+  const upsert = async (
+    entry: LeaderboardEntry,
+    imported: boolean,
+  ): Promise<WriteResult> => {
+    const mine = await findOne(`player_id=eq.${encodeURIComponent(entry.id)}`);
+    if (mine !== null && Number(mine.score) >= entry.score) {
+      return { improved: false, nameTaken: false };
+    }
+
+    // Ad başkasının mı? Benzersiz indeks zaten engelliyor ama hatayı 409'a
+    // çevirebilmek için sahibi önceden görmek gerekiyor.
+    const owner = await findOne(
+      `name=ilike.${encodeURIComponent(entry.name)}`,
+    );
+    if (
+      owner !== null &&
+      owner.player_id !== entry.id &&
+      !isLegacyId(owner.player_id)
+    ) {
+      return { improved: false, nameTaken: true };
+    }
+
+    const response = await call(`${TABLE}?on_conflict=player_id`, {
       method: "POST",
-      headers: {
-        Prefer: "return=representation,resolution=ignore-duplicates",
-      },
-      body: JSON.stringify(rows),
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([entryToRow(entry, imported)]),
     });
 
     if (!response.ok) {
+      if (response.status === 409) {
+        return { improved: false, nameTaken: true };
+      }
       throw new Error(`Supabase write failed (${response.status})`);
     }
-
-    const written = (await response.json()) as unknown;
-    return Array.isArray(written) ? written : [];
+    return { improved: true, nameTaken: false };
   };
 
   return {
     kind: "supabase",
     async readPage(limit, offset) {
       const query = [
-        "select=id,name,score,best_level,badges,elite_four,champion,trainer_wins,depth,difficulty,finished_at",
+        `select=${READ_COLUMNS.join(",")}`,
+        // Rezervasyon satırları (ad alınmış, koşu yok) tabloda görünmüyor.
+        "run_id=not.is.null",
         "order=score.desc,badges.desc,best_level.desc,depth.desc,finished_at.asc",
         `limit=${limit}`,
         `offset=${offset}`,
       ].join("&");
 
-      // `count=exact` toplam satır sayısını Content-Range başlığında veriyor;
-      // "daha fazla var mı" sorusu için ikinci bir istek gerekmiyor.
+      // `count=exact` toplam satır sayısını Content-Range başlığında veriyor.
       const response = await call(`${TABLE}?${query}`, {
         headers: { Prefer: "count=exact" },
       });
@@ -369,17 +519,83 @@ function createSupabaseStore(url: string, key: string): LeaderboardStore {
         total: Number.isFinite(total) ? total : rows.length,
       };
     },
-    async write(entry) {
-      const written = await insert([entryToRow(entry, false)]);
-      return { inserted: written.length > 0 };
-    },
-    async writeImported(entries) {
-      if (entries.length === 0) return { inserted: 0 };
-      // PostgREST tek istekte satır dizisi kabul ediyor.
-      const written = await insert(
-        entries.map((entry) => entryToRow(entry, true)),
+
+    write: (entry) => upsert(entry, false),
+
+    async claimName(playerId, name) {
+      const owner = await findOne(`name=ilike.${encodeURIComponent(name)}`);
+
+      if (owner !== null && owner.player_id !== playerId) {
+        if (!isLegacyId(owner.player_id)) return { ok: false, taken: true };
+        // Devir: eski satır bu oyuncuya geçiyor.
+        const handover = await call(
+          `${TABLE}?player_id=eq.${encodeURIComponent(owner.player_id)}`,
+          {
+            method: "PATCH",
+            headers: { Prefer: "return=minimal" },
+            body: JSON.stringify({ player_id: playerId }),
+          },
+        );
+        if (!handover.ok) {
+          throw new Error(`Supabase write failed (${handover.status})`);
+        }
+        return { ok: true, taken: false };
+      }
+
+      const response = await call(
+        `${TABLE}?player_id=eq.${encodeURIComponent(playerId)}`,
+        {
+          method: "PATCH",
+          // `return=representation` güncellenen satırları geri veriyor, yani
+          // dizinin boyu "oyuncunun satırı var mıydı" sorusunun cevabı.
+          headers: { Prefer: "return=representation" },
+          body: JSON.stringify({ name }),
+        },
       );
-      return { inserted: written.length };
+      if (!response.ok) {
+        if (response.status === 409) return { ok: false, taken: true };
+        throw new Error(`Supabase write failed (${response.status})`);
+      }
+      const patched = (await response.json()) as unknown[];
+      if (Array.isArray(patched) && patched.length > 0) {
+        return { ok: true, taken: false };
+      }
+
+      // Hiç satırı yok: adı rezerve eden, tabloda görünmeyen satır.
+      const reserve = await call(TABLE, {
+        method: "POST",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify([
+          {
+            player_id: playerId,
+            name,
+            run_id: null,
+            score: 0,
+            best_level: 0,
+            badges: 0,
+            elite_four: 0,
+            champion: false,
+            trainer_wins: 0,
+            depth: 0,
+            difficulty: "normal",
+            finished_at: Date.now(),
+          },
+        ]),
+      });
+      if (!reserve.ok) {
+        if (reserve.status === 409) return { ok: false, taken: true };
+        throw new Error(`Supabase write failed (${reserve.status})`);
+      }
+      return { ok: true, taken: false };
+    },
+
+    async writeImported(entries) {
+      let inserted = 0;
+      for (const entry of entries) {
+        const result = await upsert(entry, true);
+        if (result.improved) inserted += 1;
+      }
+      return { inserted };
     },
   };
 }
@@ -388,26 +604,79 @@ function createSupabaseStore(url: string, key: string): LeaderboardStore {
 // Süreç içi liste (sadece geliştirme)
 // ---------------------------------------------------------------------------
 
+/** Oyuncu kimliği → o oyuncunun en iyi koşusu. */
 const memoryRows = new Map<string, LeaderboardEntry>();
 
+function findMemoryOwner(name: string): LeaderboardEntry | null {
+  const wanted = name.toLowerCase();
+  for (const row of memoryRows.values()) {
+    if (row.name.toLowerCase() === wanted) return row;
+  }
+  return null;
+}
+
 function createMemoryStore(): LeaderboardStore {
+  const upsert = (entry: LeaderboardEntry): WriteResult => {
+    const owner = findMemoryOwner(entry.name);
+    if (owner !== null && owner.id !== entry.id && !isLegacyId(owner.id)) {
+      return { improved: false, nameTaken: true };
+    }
+
+    const mine = memoryRows.get(entry.id);
+    if (mine !== undefined && mine.score >= entry.score) {
+      return { improved: false, nameTaken: false };
+    }
+    memoryRows.set(entry.id, entry);
+    return { improved: true, nameTaken: false };
+  };
+
   return {
     kind: "memory",
     async readPage(limit, offset) {
-      const all = [...memoryRows.values()].sort(compareEntries);
+      // Rezervasyon satırları (`runId` boş) tabloda görünmüyor: ad alınmış ama
+      // ortada sıralanacak bir koşu yok.
+      const all = [...memoryRows.values()]
+        .filter((row) => row.runId !== "")
+        .sort(compareEntries);
       return { entries: all.slice(offset, offset + limit), total: all.length };
     },
     async write(entry) {
-      if (memoryRows.has(entry.id)) return { inserted: false };
-      memoryRows.set(entry.id, entry);
-      return { inserted: true };
+      return upsert(entry);
+    },
+    async claimName(playerId, name) {
+      const owner = findMemoryOwner(name);
+      if (owner !== null && owner.id !== playerId) {
+        if (!isLegacyId(owner.id)) return { ok: false, taken: true };
+        memoryRows.delete(owner.id);
+        memoryRows.set(playerId, { ...owner, id: playerId, name });
+        return { ok: true, taken: false };
+      }
+      const mine = memoryRows.get(playerId);
+      if (mine !== undefined) {
+        memoryRows.set(playerId, { ...mine, name });
+      } else {
+        // Hiç satırı yok: adı rezerve eden, tabloda görünmeyen satır.
+        memoryRows.set(playerId, {
+          id: playerId,
+          runId: "",
+          name,
+          score: 0,
+          bestLevel: 0,
+          badges: 0,
+          eliteFourDefeated: 0,
+          champion: false,
+          trainerWins: 0,
+          depth: 0,
+          difficulty: "normal",
+          finishedAt: Date.now(),
+        });
+      }
+      return { ok: true, taken: false };
     },
     async writeImported(entries) {
       let inserted = 0;
       for (const entry of entries) {
-        if (memoryRows.has(entry.id)) continue;
-        memoryRows.set(entry.id, entry);
-        inserted += 1;
+        if (upsert(entry).improved) inserted += 1;
       }
       return { inserted };
     },

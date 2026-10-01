@@ -49,6 +49,14 @@ interface RunOverProps {
    * ekran bir an yanlış bir şey yazıp sonra kendini düzeltiyor.
    */
   leaderboardStatus: "saving" | "recorded" | "missed";
+  /**
+   * Tablodaki satır bu koşuyla güncellendi mi?
+   *
+   * Tablo oyuncu başına EN İYİ koşuyu tutuyor, yani kabul edilmiş bir koşu
+   * sıralamayı değiştirmeyebilir. Oyuncu "kaydedildi" yazısını görüp sırasının
+   * neden aynı kaldığını merak etmesin diye ayrı söyleniyor.
+   */
+  leaderboardImproved?: boolean;
   /** Yazılamadıysa sebebi — "neden listede değilim" sorusunun cevabı. */
   rejection?: string | null;
   onRestart: () => void;
@@ -66,6 +74,7 @@ export function RunOver({
   records,
   leaderboardName,
   leaderboardStatus,
+  leaderboardImproved = true,
   rejection = null,
   onRestart,
 }: RunOverProps) {
@@ -154,7 +163,9 @@ export function RunOver({
             : leaderboardStatus === "saving"
               ? `Sending this run to the leaderboard as ${leaderboardName}…`
               : leaderboardStatus === "recorded"
-                ? `Recorded on the leaderboard as ${leaderboardName}.`
+                ? leaderboardImproved
+                  ? `New leaderboard best for ${leaderboardName}.`
+                  : `Your leaderboard best as ${leaderboardName} still stands — this run did not beat it.`
                 : `This run was not ranked, ${leaderboardName} — it is saved on this device.`}
         </p>
         {rejection !== null && leaderboardStatus === "missed" && (

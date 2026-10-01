@@ -81,9 +81,19 @@ function EffectSprite({
 
 interface MoveAnimationProps {
   animation: MoveAnimationState | null;
+  /**
+   * Trainer savaşında rakip Pokémon farklı bir noktada duruyor (trainer'ın
+   * gövde sprite'ına yer açmak için sola kayıyor), o yüzden efektin hedefi de
+   * oraya kaymalı. Bayrak state'te değil prop'ta: her render'da güncel olmalı
+   * ve animasyon state'i tek bir hamlenin ömrü kadar yaşıyor.
+   */
+  trainerBattle?: boolean;
 }
 
-export function MoveAnimation({ animation }: MoveAnimationProps) {
+export function MoveAnimation({
+  animation,
+  trainerBattle = false,
+}: MoveAnimationProps) {
   return (
     <AnimatePresence>
       {animation !== null && (
@@ -92,13 +102,13 @@ export function MoveAnimation({ animation }: MoveAnimationProps) {
           className="pointer-events-none absolute inset-0 z-40 overflow-hidden"
         >
           {animation.move.category === "physical" && (
-            <PhysicalHit animation={animation} />
+            <PhysicalHit animation={animation} trainerBattle={trainerBattle} />
           )}
           {animation.move.category === "special" && (
-            <SpecialShot animation={animation} />
+            <SpecialShot animation={animation} trainerBattle={trainerBattle} />
           )}
           {animation.move.category === "status" && (
-            <StatusAura animation={animation} />
+            <StatusAura animation={animation} trainerBattle={trainerBattle} />
           )}
         </div>
       )}
@@ -106,9 +116,15 @@ export function MoveAnimation({ animation }: MoveAnimationProps) {
   );
 }
 
+/** Her koreografinin aldığı ortak prop seti. */
+interface EffectProps {
+  animation: MoveAnimationState;
+  trainerBattle: boolean;
+}
+
 /** Physical: the effect bursts right on the defender, plus a hit flash. */
-function PhysicalHit({ animation }: { animation: MoveAnimationState }) {
-  const { to } = getAttackPath(animation.attacker);
+function PhysicalHit({ animation, trainerBattle }: EffectProps) {
+  const { to } = getAttackPath(animation.attacker, trainerBattle);
   const effectKey = getEffectKey(animation.move);
 
   return (
@@ -139,8 +155,8 @@ function PhysicalHit({ animation }: { animation: MoveAnimationState }) {
 }
 
 /** Special: the effect flies from attacker to defender, then blooms on impact. */
-function SpecialShot({ animation }: { animation: MoveAnimationState }) {
-  const { from, to } = getAttackPath(animation.attacker);
+function SpecialShot({ animation, trainerBattle }: EffectProps) {
+  const { from, to } = getAttackPath(animation.attacker, trainerBattle);
   const effectKey = getEffectKey(animation.move);
 
   return (
@@ -181,9 +197,9 @@ function SpecialShot({ animation }: { animation: MoveAnimationState }) {
 }
 
 /** Status: rings rise over the target (or over the user for self-targeting moves). */
-function StatusAura({ animation }: { animation: MoveAnimationState }) {
+function StatusAura({ animation, trainerBattle }: EffectProps) {
   const targetsSelf = animation.move.target.startsWith("user");
-  const { from, to } = getAttackPath(animation.attacker);
+  const { from, to } = getAttackPath(animation.attacker, trainerBattle);
   const point = targetsSelf ? from : to;
   const effectKey = getEffectKey(animation.move);
 

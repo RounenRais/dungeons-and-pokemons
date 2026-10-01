@@ -34,6 +34,10 @@ interface MainMenuProps {
   onPlay: () => void;
   isStarting?: boolean;
   onHowToPlay: () => void;
+  /** Bu cihazın tablodaki adı. Henüz ad alınmadıysa null. */
+  playerName?: string | null;
+  /** Ad ekranını açar — ilk ad için de, değiştirmek için de. */
+  onChangeName?: () => void;
 }
 
 /** Başlığın altında dolaşan birkaç starter — hangi oyun olduğu belli olsun. */
@@ -57,9 +61,34 @@ export function MainMenu({
   onPlay,
   isStarting = false,
   onHowToPlay,
+  playerName = null,
+  onChangeName,
 }: MainMenuProps) {
   return (
     <div className="relative flex flex-1 flex-col items-center justify-center px-4 py-10">
+      {/*
+        Sağ üstte kimlik rozeti.
+        Tabloda bir ad yalnızca bir oyuncuya ait, yani bu sadece bir tercih
+        değil bir kimlik — oyuncunun onu her an görebilmesi ve
+        değiştirebilmesi gerekiyor. Ad yoksa düğme çağrıya dönüşüyor.
+      */}
+      {onChangeName !== undefined && (
+        <div className="absolute right-4 top-4 z-10 flex items-center gap-2 text-xs">
+          {playerName !== null && (
+            <span className="max-w-[10rem] truncate rounded-full border border-[var(--ink-line)] bg-[var(--paper-3)] px-3 py-1.5 font-semibold text-[var(--ink)]">
+              {playerName}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onChangeName}
+            className="rounded-full border border-[var(--ink-line)] px-3 py-1.5 font-semibold text-[var(--ink-soft)] transition hover:bg-black/5 hover:text-[var(--ink)]"
+          >
+            {playerName === null ? "Set name" : "Change name"}
+          </button>
+        </div>
+      )}
+
       <motion.div
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}

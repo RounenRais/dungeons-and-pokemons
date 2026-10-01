@@ -20,9 +20,11 @@
 // rozetsiz Elite Four, Elite Four'suz şampiyonluk ya da level 7'de sekiz
 // rozet gibi imkânsız koşular reddediliyor.
 
+import { PLAYER_ID_PATTERN } from "@/lib/game/playerIdentity";
 import {
   LEADERBOARD_MAX_LIMIT,
   LEADERBOARD_PAGE_SIZE,
+  NAME_MESSAGES,
   normaliseRunSummary,
   toEntry,
   validateName,
@@ -151,6 +153,17 @@ export async function POST(request: Request): Promise<Response> {
     typeof body === "object" && body !== null ? body : {}
   ) as Record<string, unknown>;
 
+  // --- Oyuncu kimliği -----------------------------------------------------
+  // Tablo oyuncu başına tek satır tutuyor ve satırın anahtarı bu. Biçimi
+  // istemcideki `PLAYER_ID_PATTERN` ile aynı.
+  const playerId = payload.playerId;
+  if (typeof playerId !== "string" || !PLAYER_ID_PATTERN.test(playerId)) {
+    return Response.json(
+      { error: "A player id is required.", field: "playerId" },
+      { status: 400 },
+    );
+  }
+
   // --- Ad -----------------------------------------------------------------
   // İstemcide de doğrulanıyor; burada tekrar ediliyor çünkü bu route doğrudan
   // çağrılabilir ve ad tablonun herkese görünen tek serbest metni.
@@ -193,19 +206,33 @@ export async function POST(request: Request): Promise<Response> {
 
   // Puan burada hesaplanıyor; istemcinin gönderdiği bir `score` alanı varsa
   // hiç okunmuyor.
-  const entry = toEntry(ticket.runId, nameCheck.name, summary);
+  const entry = toEntry(playerId, ticket.runId, nameCheck.name, summary);
 
   try {
     const write = await store.write(entry);
+
+    // Ad başka bir oyuncuda: bu bir hata, sessizce başka bir ada yazılmamalı.
+    if (write.nameTaken) {
+      return Response.json(
+        { error: NAME_MESSAGES.taken, field: "name" },
+        { status: 409 },
+      );
+    }
+
     const page = await store.readPage(LEADERBOARD_PAGE_SIZE, 0);
 
     return Response.json({
       configured: true,
       storage: store.kind,
       entry,
-      // Aynı bilet ikinci kez gönderildiyse satır yazılmadı; istemci bunu
-      // "zaten kaydedilmiş" diye gösteriyor, hata olarak değil.
-      duplicate: !write.inserted,
+      /*
+       * Satır gerçekten güncellendi mi?
+       *
+       * `false` = oyuncunun tablodaki skoru zaten daha iyiydi. Hata değil:
+       * tablo oyuncu başına EN İYİ koşuyu tutuyor. İstemci bunu "rekorun
+       * korundu" diye gösteriyor.
+       */
+      improved: write.improved,
       entries: page.entries,
       total: page.total,
       hasMore: page.entries.length < page.total,

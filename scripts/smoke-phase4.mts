@@ -10,7 +10,12 @@ import {
   getXpToNextLevel,
 } from '../lib/game/leveling';
 import { resolveVictory, teachMove } from '../lib/game/progression';
-import { getLearnableUnknownMoves, rollReward } from '../lib/game/rewards';
+import {
+  getLearnableUnknownMoves,
+  getRewardMovePowerCeiling,
+  isRewardMoveTooStrong,
+  rollReward,
+} from '../lib/game/rewards';
 import { getShopItem } from '../lib/data/shopItems';
 import { createRandom } from '../lib/game/rng';
 import { calculateMaxHp } from '../lib/game/stats';
@@ -112,7 +117,7 @@ const notReplaced = teachMove(fullMoves, extraMove, null);
 check('4 hareketliyken slot seçilmezse değişmiyor', notReplaced.moves.map((m) => m.id), fullMoves.moves.map((m) => m.id));
 
 // --- Ödüller ---
-const rewardContext = { tileIndex: 10, isBoss: false, pokemon: charmander, knownMoveIds: base.moves.map((m) => m.id) };
+const rewardContext = { tileIndex: 10, isBoss: false, pokemon: charmander, level: base.level, knownMoveIds: base.moves.map((m) => m.id) };
 const rewards = Array.from({ length: 300 }, (_, i) => rollReward(createRandom(i + 1), rewardContext));
 const kinds = new Set(rewards.map((r) => r.kind));
 check('Üç ödül kategorisi de çıkıyor', [...kinds].sort(), ['gold', 'item', 'move']);
@@ -134,10 +139,35 @@ check('Boss daha çok altın veriyor', (() => {
   return avg(bossGold) > avg(normal) * 1.5;
 })(), true);
 
-const allKnown = getLearnableUnknownMoves(charmander, charmander.learnset.map((e) => e.moveId));
+const allKnown = getLearnableUnknownMoves(charmander, charmander.learnset.map((e) => e.moveId), 100);
 check('Her hareket biliniyorsa öğrenilecek hareket kalmıyor', allKnown.length, 0);
 const goldFallback = rollReward(createRandom(7), { ...rewardContext, knownMoveIds: charmander.learnset.map((e) => e.moveId) });
 check('Öğrenilecek hareket yoksa hareket ödülü altına düşüyor', goldFallback.kind !== 'move', true);
+
+/*
+ * Ödül hareketinin iki sınırı.
+ *
+ * 1) Level-up kaydı açılmamışsa havuzda olmamalı — level atlayınca zaten
+ *    kendiliğinden geliyor, ödül olarak vermek o eşiği atlamak olurdu.
+ * 2) TM/öğretmen hareketlerinin level koşulu yok, onları güç tavanı
+ *    sınırlıyor: filtresiz havuz Lv5'te Surf veriyordu.
+ */
+// SADECE level-up ile gelen geç bir hareket: aynı hareket TM olarak da
+// öğrenilebiliyorsa level koşulu taşımıyor (gücünü tavan sınırlıyor).
+const otherMethods = new Set(charmander.learnset.filter((e) => e.method !== 'level-up').map((e) => e.moveId));
+const lateLevelUp = charmander.learnset.find((e) => e.method === 'level-up' && e.level > 30 && !otherMethods.has(e.moveId));
+if (lateLevelUp !== undefined) {
+  const earlyPool = getLearnableUnknownMoves(charmander, [], 5);
+  check('Açılmamış level-up hareketi ödül havuzunda yok', earlyPool.some((m) => m.moveId === lateLevelUp.moveId), false);
+  const latePool = getLearnableUnknownMoves(charmander, [], 60);
+  check('Açılmış level-up hareketi ödül havuzunda var', latePool.some((m) => m.moveId === lateLevelUp.moveId), true);
+}
+
+const [surf, waterGun] = await getMoves(['surf', 'water-gun']);
+check('Güç tavanı level ile yükseliyor', getRewardMovePowerCeiling(5) < getRewardMovePowerCeiling(50), true);
+check('Lv5 için Surf fazla güçlü', isRewardMoveTooStrong(surf, 5), true);
+check('Lv50 için Surf uygun', isRewardMoveTooStrong(surf, 50), false);
+check('Zayif hareket her levelda uygun', isRewardMoveTooStrong(waterGun, 5), false);
 
 // --- Otomatik evrim (Charmander Lv16'da Charmeleon olur) ---
 const preEvo: TeamMember = { ...base, level: 15, xp: getXpToNextLevel(15, base.growthRate) - 1 };

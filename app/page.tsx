@@ -13,6 +13,7 @@ import { MigrationNotice } from "@/components/menu/MigrationNotice";
 import { TrainerOutro } from "@/components/battle/TrainerIntro";
 import {
   fetchLeaderboard,
+  getStoredPlayerName,
   LEADERBOARD_PAGE_SIZE,
   requestRunTicket,
   submitRun,
@@ -86,10 +87,21 @@ export default function GamePage() {
   >("saving");
   /** Tabloya yazılamadıysa sebebi — koşu sonu ekranı bunu gösteriyor. */
   const [submitRejection, setSubmitRejection] = useState<string | null>(null);
+  /** Son gönderim tablodaki satırı gerçekten güncelledi mi? */
+  const [leaderboardImproved, setLeaderboardImproved] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [menuScreen, setMenuScreen] = useState<
     "menu" | "how-to" | "name" | "wheel"
   >("menu");
+  /**
+   * Ad ekranı niçin açıldı?
+   *
+   * `claim` — koşu başlamadan, henüz adı olmayan oyuncuya soruluyor.
+   * `change` — ana menüdeki "Change name" düğmesinden geliniyor.
+   * İkisi aynı ekranı kullanıyor ama farklı davranıyor (Skip yalnızca
+   * `claim`'de var) ve onaydan sonra farklı yere dönüyorlar.
+   */
+  const [nameMode, setNameMode] = useState<"claim" | "change">("claim");
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   /** Savaş sonrası trainer repliği. */
   const [outro, setOutro] = useState<OutroState | null>(null);
@@ -115,6 +127,17 @@ export default function GamePage() {
         useGameStore.setState({ hydrated: true, migrationError: message });
       })
       .finally(() => {
+        /*
+         * Ad artık kayıtta değil CİHAZ KİMLİĞİNDE duruyor
+         * (lib/game/playerIdentity.ts): tabloda bir ada sahip olan şey koşu
+         * değil cihaz. Kayıt yüklendikten SONRA yazılıyor, yoksa rehydrate
+         * onu eski değerle geri ezerdi.
+         */
+        const storedName = getStoredPlayerName();
+        if (storedName !== null) {
+          useGameStore.getState().setPlayerName(storedName);
+        }
+
         void fetchLeaderboard().then((view) => {
           if (cancelled) return;
           setLeaderboard(view.entries);
@@ -161,6 +184,7 @@ export default function GamePage() {
       setLeaderboardHasMore(result.hasMore);
       setNewEntryId(result.entry?.id ?? null);
       setLeaderboardStatus(result.recorded ? "recorded" : "missed");
+      setLeaderboardImproved(result.improved);
       setSubmitRejection(result.rejection);
     });
   }
@@ -176,7 +200,14 @@ export default function GamePage() {
       // tıklamada yerel seed ile başlayıp sonradan başka bileti alma yarışı yok.
       const ticket = await requestRunTicket();
       useGameStore.getState().setRunTicket(ticket);
-      setMenuScreen("name");
+      // Adı olan oyuncuya her koşuda tekrar sorulmuyor: ad cihaza ait ve
+      // değiştirmek ana menüdeki düğmenin işi.
+      if (getStoredPlayerName() === null) {
+        setNameMode("claim");
+        setMenuScreen("name");
+      } else {
+        setMenuScreen("wheel");
+      }
     } finally {
       setIsStartingRun(false);
     }
@@ -488,6 +519,7 @@ export default function GamePage() {
           records={records}
           leaderboardName={playerName}
           leaderboardStatus={leaderboardStatus}
+          leaderboardImproved={leaderboardImproved}
           rejection={submitRejection}
           onRestart={() => {
             setMenuScreen("menu");
@@ -527,10 +559,23 @@ export default function GamePage() {
       return (
         <main className="flex flex-1 flex-col">
           <NamePrompt
+            mode={nameMode}
+            initialName={nameMode === "change" ? playerName : null}
             onConfirm={(name) => {
               useGameStore.getState().setPlayerName(name);
               setNewEntryId(null);
-              setMenuScreen("wheel");
+              // Değiştirme menüden geldi, menüye dönsün; ilk ad koşunun
+              // önündeki adımdı, çarka geçsin.
+              setMenuScreen(nameMode === "change" ? "menu" : "wheel");
+              if (nameMode === "change") {
+                // Tablodaki satır yeni adı gösteriyor, listeyi tazele.
+                void fetchLeaderboard().then((view) => {
+                  setLeaderboard(view.entries);
+                  setLeaderboardSource(view.source);
+                  setLeaderboardMessage(view.message);
+                  setLeaderboardHasMore(view.hasMore);
+                });
+              }
             }}
             onBack={() => setMenuScreen("menu")}
           />
@@ -559,6 +604,11 @@ export default function GamePage() {
             onPlay={beginNewRun}
             isStarting={isStartingRun}
             onHowToPlay={() => setMenuScreen("how-to")}
+            playerName={playerName}
+            onChangeName={() => {
+              setNameMode("change");
+              setMenuScreen("name");
+            }}
           />
           <Credits />
         </main>

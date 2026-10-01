@@ -15,7 +15,7 @@
 // Ayrıntı: `docs/progression.md`.
 
 import { pickOne, pickWeighted, randomInt, type RandomFn } from "./rng";
-import type { Pokemon, StatKey } from "@/lib/types";
+import type { Move, Pokemon, StatKey } from "@/lib/types";
 
 export type RewardKind = "gold" | "move" | "item";
 
@@ -82,10 +82,47 @@ export function calculateGoldReward(
   return isBoss ? base * 2 : base;
 }
 
-/** Pokémon'un öğrenebildiği ama henüz bilmediği hareketler. */
+/**
+ * Bir ödül hareketinin bu level'da sahip olabileceği EN YÜKSEK güç.
+ *
+ * Bu bir denge düzeltmesi. `machine` ve `tutor` kayıtları bir learnset'in
+ * sayıca çoğunluğu ve hiçbir level koşulu taşımıyorlar; havuz filtresizken
+ * `pickOne` hepsini eşit olasılıkla seçiyordu, yani level 6'daki bir Squirtle
+ * ilk savaşının ödülü olarak Surf (90 güç) alabiliyordu — koşunun ilk aktını
+ * tek hamlede çözen bir şey, bedava.
+ *
+ * Tavan level'la birlikte yükseldiği için kategori kapanmıyor, sadece
+ * zamanlaması düzeliyor: Water Gun (40) her zaman düşebilir, Surf (90) Lv32
+ * civarından, Hydro Pump (110) Lv44 civarından itibaren.
+ */
+export function getRewardMovePowerCeiling(level: number): number {
+  return Math.round(40 + level * 1.6);
+}
+
+/**
+ * Bu hareket bu level için fazla mı güçlü?
+ *
+ * Gücü olmayan hareketler (status, ya da gücü duruma göre hesaplananlar)
+ * tavana takılmıyor: onların etkisi ham güçle ölçülmüyor.
+ */
+export function isRewardMoveTooStrong(move: Move, level: number): boolean {
+  if (move.power === null) return false;
+  return move.power > getRewardMovePowerCeiling(level);
+}
+
+/**
+ * Pokémon'un BU LEVEL'DA öğrenebildiği ama henüz bilmediği hareketler.
+ *
+ * Level-up kayıtları eşiğini geçmiş olmak zorunda: learnset ileride
+ * öğrenilecek hareketleri de taşıyor ve onları ödül olarak vermek level
+ * sistemini atlamak demek. TM/öğretmen hareketlerinin level koşulu yok;
+ * onları `isRewardMoveTooStrong` sınırlıyor (güç verisi burada yok, çağıran
+ * hareketi zaten çekiyor).
+ */
 export function getLearnableUnknownMoves(
   pokemon: Pokemon,
   knownMoveIds: readonly number[],
+  level: number,
 ): { moveId: number; moveName: string }[] {
   const known = new Set(knownMoveIds);
   const seen = new Set<number>();
@@ -94,6 +131,9 @@ export function getLearnableUnknownMoves(
   for (const entry of pokemon.learnset) {
     // Yumurta hareketleri bu Pokémon'un öğrenemeyeceği şeyler olabilir, ele.
     if (entry.method === "egg" || entry.method === "other") continue;
+    // Henüz açılmamış level-up hareketi: level atlayınca zaten kendiliğinden
+    // geliyor, ödül olarak vermek o eşiği atlamak olurdu.
+    if (entry.method === "level-up" && entry.level > level) continue;
     if (known.has(entry.moveId) || seen.has(entry.moveId)) continue;
     seen.add(entry.moveId);
     result.push({ moveId: entry.moveId, moveName: entry.moveName });
@@ -106,6 +146,8 @@ export interface RewardContext {
   isBoss: boolean;
   pokemon: Pokemon;
   knownMoveIds: readonly number[];
+  /** Ödülü alan Pokémon'un güncel level'ı — hareket havuzunu sınırlıyor. */
+  level: number;
 }
 
 /**
@@ -119,6 +161,7 @@ export function rollReward(random: RandomFn, context: RewardContext): Reward {
     const candidates = getLearnableUnknownMoves(
       context.pokemon,
       context.knownMoveIds,
+      context.level,
     );
     if (candidates.length === 0) {
       return {

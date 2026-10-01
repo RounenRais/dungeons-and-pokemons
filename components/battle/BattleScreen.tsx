@@ -680,7 +680,10 @@ export function BattleScreen({
           imageRendering: "pixelated",
         }}
       >
-        <MoveAnimation animation={moveAnimation} />
+        <MoveAnimation
+          animation={moveAnimation}
+          trainerBattle={battle.trainer !== undefined}
+        />
 
         {/* Opponent status panel — top left */}
         <div

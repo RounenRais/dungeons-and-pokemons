@@ -28,6 +28,7 @@
 // çalıştığı için oyuncu kendi kaydını düzenleyip meşru bir biletle uydurma
 // koşu gönderebiliyor. Sınırların tamamı `docs/leaderboard.md` içinde.
 
+import { PLAYER_ID_PATTERN } from "@/lib/game/playerIdentity";
 import {
   LEADERBOARD_PAGE_SIZE,
   LOCAL_LEADERBOARD_SIZE,
@@ -85,14 +86,17 @@ function notConfigured(): Response {
  * 50 satırlık bir yerel listede tek bozuk kayıt yüzünden diğer 49'unu
  * kaybetmek oyuncu için anlamsız olurdu.
  */
-function toImportableEntry(raw: unknown, now: number): LeaderboardEntry | null {
+function toImportableEntry(
+  raw: unknown,
+  now: number,
+  playerId: string,
+): LeaderboardEntry | null {
   if (typeof raw !== "object" || raw === null) return null;
   const row = raw as Record<string, unknown>;
 
-  // Kimlik yerel satırdan OLDUĞU GİBİ alınıyor. Sebebi idempotensi: daha önce
-  // biletli yolla yazılmış bir koşu aynı kimliği taşıyor, `on conflict do
-  // nothing` onu sessizce atlıyor. Yani aktarmayı iki kez çalıştırmak tabloda
-  // kopya satır oluşturmuyor.
+  // Yerel satırın kimliği artık KOŞU kimliği: tablonun anahtarı oyuncu, o da
+  // istekten geliyor. Aktarma böylece kendiliğinden idempotent — aynı oyuncunun
+  // elli yerel koşusu tek satıra, en iyisine iniyor.
   if (typeof row.id !== "string" || !ID_PATTERN.test(row.id)) return null;
 
   const nameCheck = validateName(row.name);
@@ -115,7 +119,7 @@ function toImportableEntry(raw: unknown, now: number): LeaderboardEntry | null {
       : now;
 
   // Puan burada yeniden hesaplanıyor; satırdaki `score` alanı hiç okunmuyor.
-  return toEntry(row.id, nameCheck.name, summary, finishedAt);
+  return toEntry(playerId, row.id, nameCheck.name, summary, finishedAt);
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -154,6 +158,14 @@ export async function POST(request: Request): Promise<Response> {
     typeof body === "object" && body !== null ? body : {}
   ) as Record<string, unknown>;
 
+  const playerId = payload.playerId;
+  if (typeof playerId !== "string" || !PLAYER_ID_PATTERN.test(playerId)) {
+    return Response.json(
+      { error: "A player id is required.", field: "playerId" },
+      { status: 400 },
+    );
+  }
+
   if (!Array.isArray(payload.runs)) {
     return Response.json(
       { error: "Expected a `runs` array." },
@@ -164,15 +176,13 @@ export async function POST(request: Request): Promise<Response> {
   const now = Date.now();
   const candidates = payload.runs.slice(0, LOCAL_LEADERBOARD_SIZE);
 
-  // Aynı kimlik gövdede iki kez geçerse ikincisi atılıyor: çok satırlı insert
-  // tek ifadede çalıştığı için `on conflict` aynı demet içindeki kopyayı
-  // yakalayamıyor ve veritabanı hata verirdi.
+  // Aynı koşu gövdede iki kez geçerse ikincisi atılıyor.
   const seen = new Set<string>();
   const entries: LeaderboardEntry[] = [];
   for (const candidate of candidates) {
-    const entry = toImportableEntry(candidate, now);
-    if (entry === null || seen.has(entry.id)) continue;
-    seen.add(entry.id);
+    const entry = toImportableEntry(candidate, now, playerId);
+    if (entry === null || seen.has(entry.runId)) continue;
+    seen.add(entry.runId);
     entries.push(entry);
   }
 

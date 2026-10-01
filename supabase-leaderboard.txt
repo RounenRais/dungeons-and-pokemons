@@ -1,0 +1,149 @@
+-- ===========================================================================
+-- POKE-RUN — SKOR TABLOSU / SUPABASE KURULUM SQL'I
+-- ===========================================================================
+--
+-- NASIL CALISTIRILIR
+--   1. Supabase panelini ac -> projeni sec
+--   2. Sol menu -> SQL Editor -> "New query"
+--   3. BU DOSYANIN TAMAMINI kopyala, editore yapistir
+--   4. "Run" (veya Ctrl+Enter)
+--   5. "Success. No rows returned" gormelisin
+--
+-- Tekrar tekrar calistirilabilir: tablo zaten varsa hicbir sey bozulmaz.
+--
+-- Calistirdiktan sonra dogrulama:  npm run db:leaderboard
+-- Kanonik kaynaklar: db/migrations/0001_leaderboard.sql
+--                    db/migrations/0002_leaderboard_players.sql
+--
+-- NE YAPIYOR
+--   BOLUM 1 — tabloyu acar (daha once calistirdiysan atlanir).
+--   BOLUM 2 — tabloyu KOSU basina satirdan OYUNCU basina satira cevirir:
+--             * her oyuncu tek satir, o satirda EN IYI kosusu
+--             * daha iyi bir kosu gelince satir GUNCELLENIR, yenisi eklenmez
+--             * isim BENZERSIZ olur (buyuk/kucuk harf ayirmadan)
+--             * eski satirlar ad basina en iyisi kalacak sekilde tasinir
+-- ===========================================================================
+
+
+-- ###########################################################################
+-- BOLUM 1 — TABLO
+-- ###########################################################################
+
+create table if not exists public.leaderboard (
+  id            text primary key,
+  name          text    not null check (char_length(name) between 3 and 16),
+  score         integer not null check (score >= 0),
+  best_level    integer not null check (best_level between 0 and 100),
+  badges        integer not null check (badges between 0 and 8),
+  elite_four    integer not null check (elite_four between 0 and 4),
+  champion      boolean not null default false,
+  trainer_wins  integer not null check (trainer_wins between 0 and 200),
+  depth         integer not null check (depth between 0 and 200),
+  difficulty    text    not null default 'normal'
+                  check (difficulty in ('normal', 'hard', 'brutal')),
+  finished_at   bigint  not null,
+  created_at    timestamptz not null default now(),
+  imported      boolean not null default false,
+  constraint leaderboard_elite_needs_badges
+    check (elite_four = 0 or badges = 8),
+  constraint leaderboard_champion_needs_elite
+    check (champion = false or (badges = 8 and elite_four = 4)),
+  constraint leaderboard_trainer_wins_cover_leaders
+    check (trainer_wins >= badges + elite_four + (case when champion then 1 else 0 end))
+);
+
+alter table public.leaderboard
+  add column if not exists imported boolean not null default false;
+
+
+-- ###########################################################################
+-- BOLUM 2 — OYUNCU BASINA TEK SATIR + BENZERSIZ ISIM
+-- ###########################################################################
+
+do $$
+begin
+  -- Donusum zaten yapildiysa cik.
+  if exists (
+    select 1 from information_schema.columns
+     where table_schema = 'public'
+       and table_name = 'leaderboard'
+       and column_name = 'player_id'
+  ) then
+    return;
+  end if;
+
+  if not exists (
+    select 1 from information_schema.tables
+     where table_schema = 'public' and table_name = 'leaderboard'
+  ) then
+    return;
+  end if;
+
+  create table public.leaderboard_v2 (
+    -- Cihazda uretilen oyuncu kimligi. Satirin sahibi bu.
+    player_id     text primary key,
+
+    -- Benzersiz: ayni isimde birden fazla kullanici olamaz.
+    name          text    not null unique
+                    check (char_length(name) between 3 and 16),
+
+    -- Bu satirdaki skoru ureten kosunun kimligi.
+    -- NULL ise satir bir REZERVASYON: oyuncu adini aldi ama henuz kosu
+    -- bitirmedi. Ad kilitli ama tabloda gorunmuyor.
+    run_id        text,
+
+    score         integer not null check (score >= 0),
+    best_level    integer not null check (best_level between 0 and 100),
+    badges        integer not null check (badges between 0 and 8),
+    elite_four    integer not null check (elite_four between 0 and 4),
+    champion      boolean not null default false,
+    trainer_wins  integer not null check (trainer_wins between 0 and 200),
+    depth         integer not null check (depth between 0 and 200),
+    difficulty    text    not null default 'normal'
+                    check (difficulty in ('normal', 'hard', 'brutal')),
+
+    finished_at   bigint  not null,
+    created_at    timestamptz not null default now(),
+    updated_at    timestamptz not null default now(),
+
+    imported      boolean not null default false,
+
+    constraint leaderboard_elite_needs_badges
+      check (elite_four = 0 or badges = 8),
+    constraint leaderboard_champion_needs_elite
+      check (champion = false or (badges = 8 and elite_four = 4)),
+    constraint leaderboard_trainer_wins_cover_leaders
+      check (trainer_wins >= badges + elite_four + (case when champion then 1 else 0 end))
+  );
+
+  -- Eski satirlar tasiniyor: ad basina yalnizca EN IYI kosu kaliyor.
+  -- player_id 'legacy:<ad>' olur; o adi ilk sahiplenen cihaza devredilir.
+  insert into public.leaderboard_v2 (
+    player_id, name, run_id, score, best_level, badges, elite_four,
+    champion, trainer_wins, depth, difficulty, finished_at, imported
+  )
+  select distinct on (lower(name))
+    'legacy:' || lower(name), name, id, score, best_level, badges, elite_four,
+    champion, trainer_wins, depth, difficulty, finished_at, imported
+  from public.leaderboard
+  order by lower(name), score desc, finished_at asc;
+
+  drop table public.leaderboard;
+  alter table public.leaderboard_v2 rename to leaderboard;
+end
+$$;
+
+-- Siralama indeksi.
+create index if not exists leaderboard_rank_idx
+  on public.leaderboard (score desc, badges desc, best_level desc, depth desc, finished_at asc);
+
+-- Ad benzersizligi BUYUK/KUCUK HARF AYIRMADAN: "Rais" ile "rais" ayni ad.
+create unique index if not exists leaderboard_name_lower_idx
+  on public.leaderboard (lower(name));
+
+-- RLS acik, policy yok: sadece service_role kullanan API route erisiyor.
+alter table public.leaderboard enable row level security;
+
+-- PostgREST sema onbellegini tazele. Bu satir olmazsa bir sure daha
+-- "Could not find the table ..." (PGRST205) hatasi alabilirsin.
+notify pgrst, 'reload schema';

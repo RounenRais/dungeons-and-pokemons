@@ -28,10 +28,19 @@ export {
   type RunSummary,
 };
 
-/** Tabloda tutulan tek bir koşu. */
+/**
+ * Tabloda tutulan tek bir satır — bir KOŞU değil, bir OYUNCU.
+ *
+ * Tablo oyuncu başına tek satır tutuyor ve o satır oyuncunun en iyi koşusunu
+ * taşıyor; daha iyi bir koşu geldiğinde satır güncelleniyor (bkz.
+ * `db/migrations/0002_leaderboard_players.sql`).
+ */
 export interface LeaderboardEntry {
+  /** Oyuncu kimliği (cihaz). Satırın sahibi ve vurgulama anahtarı. */
   id: string;
-  /** Oyuncunun girdiği ad. Skip'lenen koşular tabloya hiç yazılmaz. */
+  /** Bu skoru üreten koşunun kimliği. Sıralamaya girmiyor. */
+  runId: string;
+  /** Oyuncunun adı. Tabloda BENZERSİZ. */
   name: string;
   /** Sunucunun YENİDEN HESAPLADIĞI puan — tablonun birincil sıralama ölçütü. */
   score: number;
@@ -93,7 +102,7 @@ export function normaliseName(raw: string): string {
 }
 
 /** Ad doğrulamasının reddetme sebepleri. */
-export type NameRejection = "empty" | "blank" | "too-short" | "too-long";
+export type NameRejection = "empty" | "blank" | "too-short" | "too-long" | "taken";
 
 /**
  * Ad hata mesajları — TÜRKÇE.
@@ -107,6 +116,8 @@ export const NAME_MESSAGES: Record<NameRejection, string> = {
   blank: "İsim sadece boşluktan oluşamaz.",
   "too-short": `İsim en az ${MIN_NAME_LENGTH} karakter olmalı.`,
   "too-long": `İsim en fazla ${MAX_NAME_LENGTH} karakter olabilir.`,
+  // Sunucudan geliyor: yerel doğrulama bir adın alınmış olduğunu bilemez.
+  taken: "Bu isim başka bir oyuncuda. Başka bir isim seç.",
 };
 
 export interface NameValidation {
@@ -239,6 +250,10 @@ export function parseEntries(raw: unknown): LeaderboardEntry[] {
         typeof row.id === "string" && row.id.length > 0
           ? row.id
           : createRunId(),
+      runId:
+        typeof row.runId === "string" && row.runId.length > 0
+          ? row.runId
+          : "",
       name: nameCheck.name,
       // Satırdaki `score` alanına GÜVENİLMİYOR: özetten yeniden hesaplanıyor.
       score: computeRunScore(summary),
@@ -259,15 +274,22 @@ export function parseEntries(raw: unknown): LeaderboardEntry[] {
   return entries.sort(compareEntries);
 }
 
-/** Bir koşu özetini tabloya yazılacak bir satıra çevirir. */
+/**
+ * Bir koşu özetini tabloya yazılacak bir satıra çevirir.
+ *
+ * `playerId` satırın kimliği, `runId` ise o satırdaki skoru üreten koşunun
+ * kimliği: tablo oyuncu başına tek satır tuttuğu için ikisi ayrı.
+ */
 export function toEntry(
-  id: string,
+  playerId: string,
+  runId: string,
   name: string,
   summary: RunSummary,
   finishedAt: number = Date.now(),
 ): LeaderboardEntry {
   return {
-    id,
+    id: playerId,
+    runId,
     name,
     score: computeRunScore(summary),
     bestLevel: summary.bestLevel,

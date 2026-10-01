@@ -315,17 +315,17 @@ check("Dizi olmayan girdi boş liste veriyor", parseEntries("nope").length, 0);
 
 // Sıralama: puan, rozet, level, derinlik, sonra eski koşu üstte.
 const rows: LeaderboardEntry[] = [
-  toEntry("a", "Low", { ...emptyRun, bestLevel: 10 }, 1000),
-  toEntry("b", "High", { ...emptyRun, bestLevel: 90, badges: 8, trainerWins: 8 }, 2000),
-  toEntry("c", "Mid", { ...emptyRun, bestLevel: 50 }, 1500),
+  toEntry("a", "run-a", "Low", { ...emptyRun, bestLevel: 10 }, 1000),
+  toEntry("b", "run-b", "High", { ...emptyRun, bestLevel: 90, badges: 8, trainerWins: 8 }, 2000),
+  toEntry("c", "run-c", "Mid", { ...emptyRun, bestLevel: 50 }, 1500),
 ];
 const sorted = [...rows].sort(compareEntries);
 check("En yüksek puan başta", sorted[0]?.name, "High");
 check("En düşük puan sonda", sorted[2]?.name, "Low");
 
 // Eşitlikte eski koşu üstte.
-const tieOld = toEntry("old", "Old", { ...emptyRun, bestLevel: 40 }, 1000);
-const tieNew = toEntry("new", "New", { ...emptyRun, bestLevel: 40 }, 5000);
+const tieOld = toEntry("old", "run-old", "Old", { ...emptyRun, bestLevel: 40 }, 1000);
+const tieNew = toEntry("new", "run-new", "New", { ...emptyRun, bestLevel: 40 }, 5000);
 check(
   "Eşitlikte eski koşu üstte",
   [tieNew, tieOld].sort(compareEntries)[0]?.name,

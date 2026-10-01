@@ -9,14 +9,51 @@ değil, mimarinin sonucu.
 
 ### 1. Veritabanı
 
-Şema tek bir dosyada: [`db/migrations/0001_leaderboard.sql`](../db/migrations/0001_leaderboard.sql).
-Hem düz PostgreSQL hem Supabase için geçerli, ve tekrar çalıştırılabilir.
+Şema iki dosyada, **sırayla** çalıştırılıyor:
+
+1. [`db/migrations/0001_leaderboard.sql`](../db/migrations/0001_leaderboard.sql) — tabloyu açıyor.
+2. [`db/migrations/0002_leaderboard_players.sql`](../db/migrations/0002_leaderboard_players.sql) — tabloyu
+   **koşu başına satırdan oyuncu başına satıra** çeviriyor (aşağıya bak).
+
+İkisi de hem düz PostgreSQL hem Supabase için geçerli ve tekrar çalıştırılabilir.
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/0001_leaderboard.sql
+psql "$DATABASE_URL" -f db/migrations/0002_leaderboard_players.sql
 ```
 
-Supabase kullanıyorsan: SQL Editor → dosyanın içeriğini yapıştır → Run.
+Supabase kullanıyorsan: SQL Editor → dosyaların içeriğini sırayla yapıştır → Run.
+
+### Oyuncu kimliği ve ad tekliği
+
+Tablo **oyuncu başına tek satır** tutuyor ve o satır oyuncunun **en iyi**
+koşusunu taşıyor. Daha iyi bir koşu geldiğinde satır güncelleniyor, yenisi
+eklenmiyor; daha kötü bir koşu hiçbir şeyi değiştirmiyor. Böylece çok oynayan
+biri ilk onu tek başına doldurmuyor.
+
+Satırın anahtarı `player_id`: tarayıcıda bir kez üretilen, `localStorage`'da
+duran bir kimlik ([`lib/game/playerIdentity.ts`](../lib/game/playerIdentity.ts)).
+Sunucu tarafı hesap, parola ya da e-posta **yok** — oyun tamamen istemcide
+çalışıyor ve daha ağır bir kimlik doğrulama koşunun kendisini zaten
+doğrulamıyordu (bkz. "Anti-cheat'in sınırları").
+
+`name` **benzersiz** ve büyük/küçük harf ayırmıyor: `Rais` ile `rais` aynı ad
+sayılıyor. Üç sonucu var:
+
+- Başkasının adıyla skor göndermek **409** dönüyor.
+- Ad, ilk koşu bitmeden **rezerve ediliyor**: `POST /api/leaderboard/name`
+  `run_id` NULL olan bir satır açıyor. O satır tabloda görünmüyor ama adı
+  kilitliyor — yoksa iki kişi aynı adı alır ve yarışı kaybeden adını kaybederdi.
+- Ad değiştirmek satırı **yerinde** güncelliyor: geçmiş skor da yeni adı
+  gösteriyor ve eski ad serbest kalıyor.
+
+`0002` öncesinden taşınan satırların kimliği `legacy:` ile başlıyor. Onları
+yazan cihazların kimliği yok, o yüzden o adı ilk sahiplenen cihaza
+**devrediliyorlar** — eski skorlar kayboluyor da değil, kimsenin üstüne
+kilitli de kalmıyor.
+
+**Bedeli açık:** tarayıcı verisi silinirse kimlik gider ve o ad kilitli kalır.
+Kurtarma kodu yok; bu bilinçli bir sadelik tercihi.
 
 ### 2. Ortam değişkenleri
 
@@ -141,6 +178,9 @@ Süreç içi kayan pencere (`lib/server/rateLimit.ts`):
 
 - Skor gönderimi: IP başına 10 dakikada 10 koşu.
 - Bilet alma: IP başına dakikada 6 bilet.
+- Ad sahiplenme / değiştirme: IP başına 10 dakikada 5 istek. Dar olması şart:
+  bu uç "bu ad boş mu?" sorusuna cevap veriyor, yani sınırsız bırakılsa
+  tablodaki bütün adları tek tek deneyerek listeleyen bir araca dönüşürdü.
 
 Gövde 4 KB ile sınırlı.
 

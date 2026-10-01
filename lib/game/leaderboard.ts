@@ -17,8 +17,14 @@
 // görünmüyor.
 
 import {
+  getPlayerIdentity,
+  storePlayerName,
+  type PlayerIdentity,
+} from "./playerIdentity";
+import {
   compareEntries,
   createRunId,
+  NAME_MESSAGES,
   LEADERBOARD_PAGE_SIZE,
   LOCAL_LEADERBOARD_SIZE,
   parseEntries,
@@ -57,6 +63,7 @@ const IMPORTED_KEY = "pokerun:leaderboard:imported";
 const API_PATH = "/api/leaderboard";
 const TICKET_PATH = "/api/leaderboard/run";
 const IMPORT_PATH = "/api/leaderboard/import";
+const NAME_PATH = "/api/leaderboard/name";
 
 /** Tablonun nereden geldiği — arayüz bunu oyuncuya söylüyor. */
 export type LeaderboardSource = "global" | "local" | "unconfigured";
@@ -97,8 +104,15 @@ function writeLeaderboard(entries: LeaderboardEntry[]): void {
 }
 
 /** Bir koşuyu yerel aynaya ekler ve yeni aynayı döner. */
+/*
+ * Yerel ayna KOŞU başına satır tutuyor, global tablo ise oyuncu başına.
+ *
+ * Fark bilinçli: global tablo bir sıralama, yerel ayna ise oyuncunun kendi
+ * geçmişi. `entry.id` artık oyuncu kimliği olduğu için ayna koşu kimliğine
+ * göre anahtarlanıyor — yoksa her koşu bir öncekini silerdi.
+ */
 function appendLocal(entry: LeaderboardEntry): LeaderboardEntry[] {
-  const existing = readLeaderboard().filter((row) => row.id !== entry.id);
+  const existing = readLeaderboard().filter((row) => row.runId !== entry.runId);
   const next = [...existing, entry]
     .sort(compareEntries)
     .slice(0, LOCAL_LEADERBOARD_SIZE);
@@ -181,7 +195,8 @@ interface ApiPayload {
   entry?: unknown;
   total?: unknown;
   hasMore?: unknown;
-  duplicate?: unknown;
+  improved?: unknown;
+  taken?: unknown;
   message?: unknown;
   error?: unknown;
   problems?: unknown;
@@ -265,8 +280,13 @@ export interface SubmitResult extends LeaderboardView {
   entry: LeaderboardEntry | null;
   /** Herkese açık tabloya gerçekten yazıldı mı? */
   recorded: boolean;
-  /** Aynı koşu daha önce gönderilmişti. */
-  duplicate: boolean;
+  /**
+   * Tablodaki satır gerçekten güncellendi mi?
+   *
+   * `false` = oyuncunun tablodaki skoru zaten bu koşudan iyiydi. Hata değil;
+   * arayüz bunu "rekorun korundu" diye gösteriyor.
+   */
+  improved: boolean;
   /** Yazılamadıysa sebebi — arayüz bunu gösteriyor. */
   rejection: string | null;
 }
@@ -293,7 +313,7 @@ export async function submitRun(
       ...view,
       entry: null,
       recorded: false,
-      duplicate: false,
+      improved: false,
       rejection:
         name === null
           ? null
@@ -303,7 +323,13 @@ export async function submitRun(
 
   // Yerel satır bileti varsa onun kimliğini kullanıyor: aynı koşu iki listede
   // aynı kimlikle duruyor, yani vurgulanan satır ikisinde de aynı.
-  const entry = toEntry(ticket?.runId ?? createRunId(), nameCheck.name, run);
+  const identity = getPlayerIdentity();
+  const entry = toEntry(
+    identity.id,
+    ticket?.runId ?? createRunId(),
+    nameCheck.name,
+    run,
+  );
   const localEntries = appendLocal(entry);
 
   if (ticket === null) {
@@ -315,7 +341,7 @@ export async function submitRun(
       ),
       entry,
       recorded: false,
-      duplicate: false,
+      improved: false,
       rejection:
         "This run was not ranked: the server did not issue a run ticket when it started.",
     };
@@ -325,7 +351,12 @@ export async function submitRun(
     const response = await fetch(API_PATH, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: nameCheck.name, run, ticket }),
+      body: JSON.stringify({
+        playerId: identity.id,
+        name: nameCheck.name,
+        run,
+        ticket,
+      }),
     });
     const payload = (await response.json()) as ApiPayload;
 
@@ -334,7 +365,7 @@ export async function submitRun(
         ...localView("unconfigured", readMessage(payload), localEntries),
         entry,
         recorded: false,
-        duplicate: false,
+        improved: false,
         rejection: readMessage(payload),
       };
     }
@@ -344,7 +375,7 @@ export async function submitRun(
         ...localView("local", readMessage(payload), localEntries),
         entry,
         recorded: false,
-        duplicate: false,
+        improved: false,
         rejection: readMessage(payload) ?? "The run could not be recorded.",
       };
     }
@@ -361,7 +392,7 @@ export async function submitRun(
       message: null,
       entry: serverEntry,
       recorded: true,
-      duplicate: payload.duplicate === true,
+      improved: payload.improved === true,
       rejection: null,
     };
   } catch {
@@ -373,11 +404,94 @@ export async function submitRun(
       ),
       entry,
       recorded: false,
-      duplicate: false,
+      improved: false,
       rejection: "Offline — the run could not be sent to the leaderboard.",
     };
   }
 }
+
+// --- Ad sahiplenme ---------------------------------------------------------
+
+export interface NameClaimOutcome {
+  ok: boolean;
+  /** Ad geçerli ama başka bir oyuncunun. */
+  taken: boolean;
+  /** Oyuncuya gösterilecek mesaj; başarılıysa null. */
+  message: string | null;
+  /**
+   * Tablo kurulu değil ya da ulaşılamıyor.
+   *
+   * Bu durumda ad YEREL olarak kaydediliyor ve oyun sürüyor: tablosu olmayan
+   * bir dağıtımda isim yüzünden oyuna girememek anlamsız olurdu.
+   */
+  offline: boolean;
+}
+
+/**
+ * Adı bu cihaza bağlar — ilk kez ad koyarken de, değiştirirken de aynı çağrı.
+ *
+ * Sunucu kabul ederse ad localStorage'a yazılıyor ve bundan sonraki koşular
+ * sormadan onu kullanıyor. Ad başkasındaysa hiçbir şey yazılmıyor ve çağıran
+ * `taken` görüyor.
+ */
+export async function claimPlayerName(
+  rawName: string,
+): Promise<NameClaimOutcome> {
+  const nameCheck = validateName(rawName);
+  if (!nameCheck.ok) {
+    return {
+      ok: false,
+      taken: false,
+      message: nameCheck.message,
+      offline: false,
+    };
+  }
+
+  const identity = getPlayerIdentity();
+
+  try {
+    const response = await fetch(NAME_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ playerId: identity.id, name: nameCheck.name }),
+    });
+    const payload = (await response.json()) as ApiPayload;
+
+    if (response.status === 409 || payload.taken === true) {
+      return {
+        ok: false,
+        taken: true,
+        message: readMessage(payload) ?? NAME_MESSAGES.taken,
+        offline: false,
+      };
+    }
+
+    if (payload.configured !== true || !response.ok) {
+      // Tablo yok ya da okunamıyor: ad yerel kalsın, oyun dursun istemiyoruz.
+      storePlayerName(nameCheck.name);
+      return {
+        ok: true,
+        taken: false,
+        message: null,
+        offline: true,
+      };
+    }
+
+    storePlayerName(nameCheck.name);
+    return { ok: true, taken: false, message: null, offline: false };
+  } catch {
+    storePlayerName(nameCheck.name);
+    return { ok: true, taken: false, message: null, offline: true };
+  }
+}
+
+/** Cihazın kayıtlı adı — yoksa null. */
+export function getStoredPlayerName(): string | null {
+  return getPlayerIdentity().name;
+}
+
+export type { PlayerIdentity };
+export { getPlayerIdentity, storePlayerName };
 
 // --- Yerel aynayı global tabloya aktarma ------------------------------------
 //
@@ -461,7 +575,10 @@ export async function importLocalRuns(): Promise<ImportResult> {
     const response = await fetch(IMPORT_PATH, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ runs: pending }),
+      body: JSON.stringify({
+        playerId: getPlayerIdentity().id,
+        runs: pending,
+      }),
     });
     const payload = (await response.json()) as ApiPayload & {
       imported?: unknown;
