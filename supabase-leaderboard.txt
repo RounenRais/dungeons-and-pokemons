@@ -9,30 +9,54 @@
 --   4. "Run" (veya Ctrl+Enter)
 --   5. "Success. No rows returned" gormelisin
 --
--- Tekrar tekrar calistirilabilir: tablo zaten varsa hicbir sey bozulmaz.
+-- Tekrar tekrar calistirilabilir.
+--
+-- ---------------------------------------------------------------------------
+-- HICBIR SATIR SILINMIYOR
+-- ---------------------------------------------------------------------------
+-- Eski tablo `leaderboard_runs` adiyla ARSIVE aliniyor: kosu basina satir
+-- tasiyan gecmisin tamami orada duruyor ve sorgulanabiliyor.
+--   select * from leaderboard_runs order by score desc;
+--
+-- Siralama tablosu (`leaderboard`) bu arsivden ad basina EN IYI kosu alinarak
+-- kuruluyor. Yani 20 kosu yapmis bir oyuncunun en yuksek skoru tabloda,
+-- diger 19 kosusu da arsivde duruyor.
 --
 -- Calistirdiktan sonra dogrulama:  npm run db:leaderboard
--- Kanonik kaynaklar: db/migrations/0001_leaderboard.sql
---                    db/migrations/0002_leaderboard_players.sql
 --
--- NE YAPIYOR
---   BOLUM 1 — tabloyu acar (daha once calistirdiysan atlanir).
---   BOLUM 2 — tabloyu KOSU basina satirdan OYUNCU basina satira cevirir:
---             * her oyuncu tek satir, o satirda EN IYI kosusu
---             * daha iyi bir kosu gelince satir GUNCELLENIR, yenisi eklenmez
---             * isim BENZERSIZ olur (buyuk/kucuk harf ayirmadan)
---             * eski satirlar ad basina en iyisi kalacak sekilde tasinir
+-- Bu dosya db/migrations/0001_leaderboard.sql ve 0002_leaderboard_players.sql
+-- dosyalarindan URETILDI; kanonik kaynak onlar.
 -- ===========================================================================
 
 
 -- ###########################################################################
--- BOLUM 1 — TABLO
+-- BOLUM 1 — TABLOYU AC (daha once calistirdiysan hicbir sey yapmaz)
 -- ###########################################################################
 
+-- Herkese açık skor tablosu.
+--
+-- Bu dosya hem düz PostgreSQL (DATABASE_URL) hem Supabase SQL editörü için
+-- geçerli: ikisi de aynı şemayı kullanıyor, yani Supabase'te açılmış bir tablo
+-- DATABASE_URL ile de okunabiliyor (bkz. lib/server/leaderboardStore.ts).
+--
+-- Çalıştırma:
+--   psql "$DATABASE_URL" -f db/migrations/0001_leaderboard.sql
+-- ya da Supabase → SQL Editor → içeriği yapıştır → Run.
+--
+-- Tekrar çalıştırılabilir: her ifade IF NOT EXISTS kullanıyor.
+
 create table if not exists public.leaderboard (
+  -- Sunucunun verdiği runId. Birincil anahtar olması AYNI KOŞUNUN İKİ KEZ
+  -- kaydedilmesini engelliyor: ikinci insert `on conflict do nothing` ile
+  -- sessizce yutuluyor.
   id            text primary key,
   name          text    not null check (char_length(name) between 3 and 16),
+
+  -- Puan sunucuda hesaplanıyor (lib/game/score.ts). Burada da tutuluyor ki
+  -- sıralama indeksten gelsin; okunurken özetten yeniden hesaplanıyor, yani
+  -- bu kolon elle düzenlense bile tabloyu bozamıyor.
   score         integer not null check (score >= 0),
+
   best_level    integer not null check (best_level between 0 and 100),
   badges        integer not null check (badges between 0 and 8),
   elite_four    integer not null check (elite_four between 0 and 4),
@@ -41,9 +65,19 @@ create table if not exists public.leaderboard (
   depth         integer not null check (depth between 0 and 200),
   difficulty    text    not null default 'normal'
                   check (difficulty in ('normal', 'hard', 'brutal')),
+
   finished_at   bigint  not null,
   created_at    timestamptz not null default now(),
+
+  -- Satır, koşu biletiyle mi geldi yoksa cihazdaki yerel aynadan sonradan mı
+  -- aktarıldı? İçe aktarılan satırların biletl(er)i yok (bkz.
+  -- app/api/leaderboard/import/route.ts), yani güven seviyesi daha düşük.
+  -- Sıralamayı etkilemiyor; ama "bunlar nereden geldi" sorusunun tabloda bir
+  -- cevabı olsun diye tutuluyor ve gerekirse toplu silinebiliyor.
   imported      boolean not null default false,
+
+  -- Sıra kuralları veritabanı seviyesinde de duruyor: uygulama katmanı
+  -- atlanırsa (elle insert, başka bir istemci) tablo yine tutarlı kalıyor.
   constraint leaderboard_elite_needs_badges
     check (elite_four = 0 or badges = 8),
   constraint leaderboard_champion_needs_elite
@@ -52,17 +86,61 @@ create table if not exists public.leaderboard (
     check (trainer_wins >= badges + elite_four + (case when champion then 1 else 0 end))
 );
 
+-- `create table if not exists` var olan bir tabloya kolon EKLEMİYOR. Bu dosyanın
+-- `imported` kolonundan önceki bir sürümünü çalıştırmış bir kurulum da
+-- güncellenebilsin diye kolon ayrıca ekleniyor.
 alter table public.leaderboard
   add column if not exists imported boolean not null default false;
 
+-- Tablonun birincil sıralaması. `compareEntries` ile birebir aynı sıra.
+create index if not exists leaderboard_rank_idx
+  on public.leaderboard (score desc, badges desc, best_level desc, depth desc, finished_at asc);
+
+-- Supabase kullanılıyorsa: RLS açık ve hiç policy yok, yani anon anahtarla
+-- kimse okuyup yazamıyor. Sadece service_role kullanan API route erişiyor ve
+-- doğrulama orada yapılıyor. Düz PostgreSQL'de bu satır zararsız.
+alter table public.leaderboard enable row level security;
+
+-- Supabase REST (PostgREST) şemayı önbelleğe alıyor. Tablo yeni açıldığında
+-- önbellek tazelenene kadar `/rest/v1/leaderboard` "Could not find the table
+-- 'public.leaderboard' in the schema cache" (PGRST205) dönebiliyor. Bu satır
+-- tazelemeyi hemen tetikliyor; düz PostgreSQL'de zararsız.
+notify pgrst, 'reload schema';
+
 
 -- ###########################################################################
--- BOLUM 2 — OYUNCU BASINA TEK SATIR + BENZERSIZ ISIM
+-- BOLUM 2 — OYUNCU BASINA TEK SATIR + BENZERSIZ ISIM + ARSIV
 -- ###########################################################################
+
+-- Skor tablosu: KOŞU başına satırdan OYUNCU başına satıra geçiş.
+--
+-- ---------------------------------------------------------------------------
+-- NE DEĞİŞİYOR
+-- ---------------------------------------------------------------------------
+-- Eski tabloda her koşu bir satırdı: çok oynayan bir oyuncu ilk onu tek başına
+-- dolduruyordu (üç satırlık test verisinde bile aynı ad iki kez geçiyordu).
+-- Yeni tabloda her OYUNCU bir satır ve o satır oyuncunun EN İYİ koşusunu
+-- taşıyor; daha iyi bir koşu geldiğinde satır güncelleniyor, yenisi eklenmiyor.
+--
+-- Kimlik `player_id`: tarayıcıda üretilen, cihaza ait bir kimlik
+-- (lib/game/playerIdentity.ts). Sunucu tarafı hesap yok, parola yok — oyun
+-- tamamen istemcide çalışıyor ve bu bilinçli bir takas (bkz. docs/leaderboard.md).
+--
+-- `name` artık BENZERSİZ: aynı adı iki oyuncu kullanamıyor. Ad değişikliği
+-- satırı yerinde güncelliyor, yani oyuncunun geçmiş koşusu da yeni adı
+-- gösteriyor ve eski ad serbest kalıyor.
+--
+-- ---------------------------------------------------------------------------
+-- ÇALIŞTIRMA
+-- ---------------------------------------------------------------------------
+--   psql "$DATABASE_URL" -f db/migrations/0002_leaderboard_players.sql
+-- ya da Supabase → SQL Editor → içeriği yapıştır → Run.
+--
+-- Tekrar çalıştırılabilir: dönüşüm zaten yapılmışsa hiçbir şey yapmıyor.
 
 do $$
 begin
-  -- Donusum zaten yapildiysa cik.
+  -- Dönüşüm zaten yapıldıysa çık.
   if exists (
     select 1 from information_schema.columns
      where table_schema = 'public'
@@ -72,6 +150,7 @@ begin
     return;
   end if;
 
+  -- Eski tablo hiç yoksa yapacak bir şey yok; 0001 önce çalışmalı.
   if not exists (
     select 1 from information_schema.tables
      where table_schema = 'public' and table_name = 'leaderboard'
@@ -79,17 +158,45 @@ begin
     return;
   end if;
 
-  create table public.leaderboard_v2 (
-    -- Cihazda uretilen oyuncu kimligi. Satirin sahibi bu.
+  /*
+   * HİÇBİR SATIR SİLİNMİYOR.
+   *
+   * Eski tablo `leaderboard_runs` adıyla ARŞİVE alınıyor: koşu başına satır
+   * taşıyan geçmişin tamamı orada duruyor ve sorgulanabiliyor. Sıralama
+   * tablosu bu arşivden ad başına EN İYİ koşu alınarak kuruluyor.
+   *
+   * `drop table` ile kurmak daha kısa olurdu ama bir oyuncunun yirmi koşusunun
+   * on dokuzunu kalıcı olarak yok ederdi — sıralamaya girmeyen bir koşu da
+   * oynanmış bir koşu.
+   *
+   * İndeks adları ilişki ad uzayını tablolarla PAYLAŞIYOR: `alter table
+   * ... rename` indeksleri yeniden adlandırmıyor, yani eski `leaderboard_pkey`
+   * olduğu yerde kalıyor ve yeni tablonun birincil anahtarı aynı adı istediğinde
+   * çakışıyor. O yüzden indeksler de taşınıyor.
+   */
+  alter index if exists public.leaderboard_pkey
+    rename to leaderboard_runs_pkey;
+  alter index if exists public.leaderboard_rank_idx
+    rename to leaderboard_runs_rank_idx;
+
+  alter table public.leaderboard rename to leaderboard_runs;
+
+  create table public.leaderboard (
+    -- Cihazda üretilen oyuncu kimliği. Satırın sahibi bu.
     player_id     text primary key,
 
-    -- Benzersiz: ayni isimde birden fazla kullanici olamaz.
-    name          text    not null unique
+    -- Benzersiz: "aynı isimde birden fazla kullanıcı olmasın".
+    name          text    not null
                     check (char_length(name) between 3 and 16),
 
-    -- Bu satirdaki skoru ureten kosunun kimligi.
-    -- NULL ise satir bir REZERVASYON: oyuncu adini aldi ama henuz kosu
-    -- bitirmedi. Ad kilitli ama tabloda gorunmuyor.
+    /*
+     * Bu satırdaki skoru üreten koşunun kimliği.
+     *
+     * NULL olabilir ve bunun özel bir anlamı var: satır bir REZERVASYON.
+     * Oyuncu adını aldı ama henüz koşu bitirmedi. Ad o anda kilitlenmek
+     * zorunda (yoksa iki kişi aynı adı alıp ilk koşuyu bitiren kazanırdı),
+     * ama tabloda görünmemeli — `readPage` bu satırları eliyor.
+     */
     run_id        text,
 
     score         integer not null check (score >= 0),
@@ -116,34 +223,40 @@ begin
       check (trainer_wins >= badges + elite_four + (case when champion then 1 else 0 end))
   );
 
-  -- Eski satirlar tasiniyor: ad basina yalnizca EN IYI kosu kaliyor.
-  -- player_id 'legacy:<ad>' olur; o adi ilk sahiplenen cihaza devredilir.
-  insert into public.leaderboard_v2 (
+  /*
+   * Arşivden ad başına EN İYİ koşu alınıyor.
+   *
+   * `player_id` 'legacy:<ad>' oluyor çünkü o satırları yazan cihazların
+   * kimliği yok — tablo bu kimlik şeması gelmeden önce yazılmıştı. Bir cihaz o
+   * adı sahiplenmek istediğinde sunucu devri kabul ediyor
+   * (lib/server/leaderboardStore.ts, `claimName`), yani skor kaybolmuyor ama
+   * kimsenin üstüne de kilitli kalmıyor.
+   */
+  insert into public.leaderboard (
     player_id, name, run_id, score, best_level, badges, elite_four,
     champion, trainer_wins, depth, difficulty, finished_at, imported
   )
   select distinct on (lower(name))
     'legacy:' || lower(name), name, id, score, best_level, badges, elite_four,
     champion, trainer_wins, depth, difficulty, finished_at, imported
-  from public.leaderboard
+  from public.leaderboard_runs
   order by lower(name), score desc, finished_at asc;
-
-  drop table public.leaderboard;
-  alter table public.leaderboard_v2 rename to leaderboard;
 end
 $$;
 
--- Siralama indeksi.
+-- Tablonun birincil sıralaması. `compareEntries` ile birebir aynı sıra.
 create index if not exists leaderboard_rank_idx
   on public.leaderboard (score desc, badges desc, best_level desc, depth desc, finished_at asc);
 
--- Ad benzersizligi BUYUK/KUCUK HARF AYIRMADAN: "Rais" ile "rais" ayni ad.
+/*
+ * Ad benzersizliği BÜYÜK/KÜÇÜK HARF AYIRMADAN.
+ *
+ * `name text unique` tek başına "Rais" ile "rais"i iki farklı oyuncu sayardı;
+ * oysa tabloya bakan biri onları aynı kişi sanır ve kural da o yüzden var.
+ */
 create unique index if not exists leaderboard_name_lower_idx
   on public.leaderboard (lower(name));
 
--- RLS acik, policy yok: sadece service_role kullanan API route erisiyor.
 alter table public.leaderboard enable row level security;
 
--- PostgREST sema onbellegini tazele. Bu satir olmazsa bir sure daha
--- "Could not find the table ..." (PGRST205) hatasi alabilirsin.
 notify pgrst, 'reload schema';

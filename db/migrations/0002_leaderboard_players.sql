@@ -44,12 +44,35 @@ begin
     return;
   end if;
 
-  create table public.leaderboard_v2 (
+  /*
+   * HİÇBİR SATIR SİLİNMİYOR.
+   *
+   * Eski tablo `leaderboard_runs` adıyla ARŞİVE alınıyor: koşu başına satır
+   * taşıyan geçmişin tamamı orada duruyor ve sorgulanabiliyor. Sıralama
+   * tablosu bu arşivden ad başına EN İYİ koşu alınarak kuruluyor.
+   *
+   * `drop table` ile kurmak daha kısa olurdu ama bir oyuncunun yirmi koşusunun
+   * on dokuzunu kalıcı olarak yok ederdi — sıralamaya girmeyen bir koşu da
+   * oynanmış bir koşu.
+   *
+   * İndeks adları ilişki ad uzayını tablolarla PAYLAŞIYOR: `alter table
+   * ... rename` indeksleri yeniden adlandırmıyor, yani eski `leaderboard_pkey`
+   * olduğu yerde kalıyor ve yeni tablonun birincil anahtarı aynı adı istediğinde
+   * çakışıyor. O yüzden indeksler de taşınıyor.
+   */
+  alter index if exists public.leaderboard_pkey
+    rename to leaderboard_runs_pkey;
+  alter index if exists public.leaderboard_rank_idx
+    rename to leaderboard_runs_rank_idx;
+
+  alter table public.leaderboard rename to leaderboard_runs;
+
+  create table public.leaderboard (
     -- Cihazda üretilen oyuncu kimliği. Satırın sahibi bu.
     player_id     text primary key,
 
     -- Benzersiz: "aynı isimde birden fazla kullanıcı olmasın".
-    name          text    not null unique
+    name          text    not null
                     check (char_length(name) between 3 and 16),
 
     /*
@@ -87,26 +110,23 @@ begin
   );
 
   /*
-   * Eski satırlar taşınıyor: ad başına yalnızca EN İYİ koşu kalıyor.
+   * Arşivden ad başına EN İYİ koşu alınıyor.
    *
-   * `player_id` 'legacy:<ad>' olarak doldurulyor çünkü o satırları yazan
-   * cihazların kimliği yok — tablo bu kimlik şeması gelmeden önce yazılmıştı.
-   * Bir cihaz o adı sahiplenmek istediğinde sunucu devri kabul ediyor
-   * (lib/server/leaderboardStore.ts, `claimName`), yani eski skorlar
-   * kaybolmuyor ama kimsenin üstüne de kilitli kalmıyor.
+   * `player_id` 'legacy:<ad>' oluyor çünkü o satırları yazan cihazların
+   * kimliği yok — tablo bu kimlik şeması gelmeden önce yazılmıştı. Bir cihaz o
+   * adı sahiplenmek istediğinde sunucu devri kabul ediyor
+   * (lib/server/leaderboardStore.ts, `claimName`), yani skor kaybolmuyor ama
+   * kimsenin üstüne de kilitli kalmıyor.
    */
-  insert into public.leaderboard_v2 (
+  insert into public.leaderboard (
     player_id, name, run_id, score, best_level, badges, elite_four,
     champion, trainer_wins, depth, difficulty, finished_at, imported
   )
   select distinct on (lower(name))
     'legacy:' || lower(name), name, id, score, best_level, badges, elite_four,
     champion, trainer_wins, depth, difficulty, finished_at, imported
-  from public.leaderboard
+  from public.leaderboard_runs
   order by lower(name), score desc, finished_at asc;
-
-  drop table public.leaderboard;
-  alter table public.leaderboard_v2 rename to leaderboard;
 end
 $$;
 

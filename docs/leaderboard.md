@@ -15,6 +15,14 @@ değil, mimarinin sonucu.
 2. [`db/migrations/0002_leaderboard_players.sql`](../db/migrations/0002_leaderboard_players.sql) — tabloyu
    **koşu başına satırdan oyuncu başına satıra** çeviriyor (aşağıya bak).
 
+`0002` **hiçbir satır silmiyor**: eski tabloyu `leaderboard_runs` adıyla arşive
+alıyor ve sıralama tablosunu ondan kuruyor. Yirmi koşu yapmış bir oyuncunun en
+yüksek skoru tabloda, diğer on dokuz koşusu da arşivde duruyor.
+
+```sql
+select * from leaderboard_runs order by score desc;
+```
+
 İkisi de hem düz PostgreSQL hem Supabase için geçerli ve tekrar çalıştırılabilir.
 
 ```bash
