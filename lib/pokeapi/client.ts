@@ -3,6 +3,10 @@
 // Üç katman: bellek cache → localStorage cache → ağ.
 // Aynı kaynağa aynı anda birden fazla istek gitmez (in-flight dedupe),
 // geçici hatalarda üstel geri çekilmeyle yeniden denenir.
+//
+// Bazı ağlar `pokeapi.co`'yu engelliyor; doğrudan istek ağ hatası verirse
+// istek kendi domainimizdeki `/api/pokeapi` yedeğine gidiyor ve oturumun
+// geri kalanı oradan devam ediyor (bkz. `app/api/pokeapi/[...path]/route.ts`).
 
 import { buildCacheKey, readCache, writeCache } from "./cache";
 import { mapEvolutionChain, mapMove, mapPokemon, mapSpecies } from "./mappers";
@@ -22,6 +26,8 @@ import type {
 } from "@/lib/types";
 
 const BASE_URL = "https://pokeapi.co/api/v2";
+/** Aynı origin üzerinden PokeAPI yedeği. */
+const PROXY_BASE_URL = "/api/pokeapi";
 const REQUEST_TIMEOUT_MS = 12_000;
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 400;
@@ -43,6 +49,12 @@ export class PokeApiError extends Error {
   }
 }
 
+/**
+ * Doğrudan erişim bu oturumda bir kez ağ hatası verdiyse true. Engelli bir
+ * ağda her istek için önce zaman aşımını beklememek için kalıcı.
+ */
+let preferProxy = false;
+
 /** Aynı anda uçuşta olan istekler: cacheKey → promise. */
 const inFlight = new Map<string, Promise<unknown>>();
 
@@ -57,8 +69,13 @@ async function fetchJson<T>(path: string): Promise<T> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
+    // Proxy göreli bir adres: sadece tarayıcıda anlamlı (smoke script'leri
+    // Node'da doğrudan gidiyor).
+    const viaProxy = preferProxy && typeof window !== "undefined";
+    const baseUrl = viaProxy ? PROXY_BASE_URL : BASE_URL;
+
     try {
-      const response = await fetch(`${BASE_URL}/${path}`, {
+      const response = await fetch(`${baseUrl}/${path}`, {
         signal: controller.signal,
         headers: { Accept: "application/json" },
       });
@@ -80,6 +97,18 @@ async function fetchJson<T>(path: string): Promise<T> {
 
       // 404 ve iptal edilmiş istekler tekrar denenmez.
       if (error instanceof PokeApiError && error.isNotFound) throw error;
+
+      // Yanıt hiç gelmedi (engel, DNS, zaman aşımı): yedeğe geç ve beklemeden
+      // tekrar dene.
+      if (
+        !(error instanceof PokeApiError) &&
+        !viaProxy &&
+        typeof window !== "undefined"
+      ) {
+        preferProxy = true;
+        continue;
+      }
+
       if (attempt < MAX_ATTEMPTS) {
         await delay(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
       }
