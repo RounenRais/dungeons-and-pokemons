@@ -5,7 +5,8 @@
 
 import { motion } from "framer-motion";
 import { STATUS_COLORS, STATUS_LABELS, type VolatileBadge } from "@/lib/battle";
-import type { StatusAilment } from "@/lib/types";
+import type { PokemonType, StatusAilment } from "@/lib/types";
+import { TypeIcon } from "./TypeIcon";
 
 interface HpPanelProps {
   name: string;
@@ -24,6 +25,8 @@ interface HpPanelProps {
    * bıraktığında anlaşılıyor.
    */
   badges?: VolatileBadge[];
+  /** Kutunun sağında FRLG tip etiketleri olarak gösteriliyor. */
+  types?: PokemonType[];
 }
 
 function getHpColor(ratio: number): string {
@@ -42,88 +45,110 @@ export function HpPanel({
   showDetails,
   xpRatio = 0,
   badges = [],
+  types = [],
 }: HpPanelProps) {
   const ratio = maxHp > 0 ? Math.max(0, Math.min(1, currentHp / maxHp)) : 0;
 
   return (
-    <div className="gba-status-box gba-text w-[10.5rem] px-2 py-1 sm:w-[13rem] sm:px-2.5 sm:py-1.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="truncate text-[9px] uppercase sm:text-[10px]">
-          {name}
-        </span>
-        <span className="shrink-0 text-[9px] sm:text-[10px]">Lv{level}</span>
-      </div>
-
-      <div className="mt-1 flex items-center gap-1">
-        <span
-          className="rounded-sm px-1 text-[8px] font-bold text-white"
-          style={{ backgroundColor: "var(--gba-gold)" }}
-        >
-          HP
-        </span>
-        <div className="gba-hp-track h-2 flex-1 overflow-hidden">
-          <motion.div
-            className="h-full"
-            initial={false}
-            animate={{
-              width: `${ratio * 100}%`,
-              backgroundColor: getHpColor(ratio),
-            }}
-            transition={{ duration: 0.55, ease: "easeOut" }}
-          />
+    <div className="flex items-start gap-1">
+      <div className="gba-status-box gba-text w-[10.5rem] px-2 py-1 sm:w-[13rem] sm:px-2.5 sm:py-1.5">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="truncate text-[9px] uppercase sm:text-[10px]">
+            {name}
+          </span>
+          <span className="shrink-0 text-[9px] sm:text-[10px]">Lv{level}</span>
         </div>
+
+        <div className="relative mt-1 flex items-center gap-1">
+          <span
+            className="rounded-sm px-1 text-[8px] font-bold text-white"
+            style={{ backgroundColor: "var(--gba-gold)" }}
+          >
+            HP
+          </span>
+          {/* Tip sembolleri kutunun dışında ama HP barının hizasında: satıra
+              göre konumlanıyor, kenar boşluğu = kutunun sağ dolgusu +
+              kenarlık (2px) + dış boşluk (4px). Yerini sağdaki boş kopya
+              ayırıyor. */}
+          {types.length > 0 && (
+            <div className="absolute left-full top-1/2 ml-[14px] flex -translate-y-1/2 gap-0.5 sm:ml-4">
+              {types.map((type) => (
+                <TypeIcon key={type} type={type} />
+              ))}
+            </div>
+          )}
+          <div className="gba-hp-track h-2 flex-1 overflow-hidden">
+            <motion.div
+              className="h-full"
+              initial={false}
+              animate={{
+                width: `${ratio * 100}%`,
+                backgroundColor: getHpColor(ratio),
+              }}
+              transition={{ duration: 0.55, ease: "easeOut" }}
+            />
+          </div>
+        </div>
+
+        {showDetails && (
+          <>
+            <p className="mt-0.5 text-right text-[9px] tabular-nums">
+              {Math.max(0, currentHp)}/{maxHp}
+            </p>
+            <div className="mt-0.5 flex items-center gap-1">
+              <span
+                className="text-[7px] font-bold"
+                style={{ color: "var(--gba-gold)" }}
+              >
+                EXP
+              </span>
+              <div className="h-1 flex-1 overflow-hidden rounded-full bg-black/25">
+                <motion.div
+                  className="h-full"
+                  style={{ backgroundColor: "var(--gba-exp)" }}
+                  animate={{
+                    width: `${Math.max(0, Math.min(1, xpRatio)) * 100}%`,
+                  }}
+                  transition={{ duration: 0.6, ease: "easeOut" }}
+                />
+              </div>
+            </div>
+          </>
+        )}
+
+        {(status !== "none" || isConfused || badges.length > 0) && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {status !== "none" && (
+              <span
+                className="rounded-sm px-1 text-[7px] font-bold uppercase text-white"
+                style={{ backgroundColor: STATUS_COLORS[status] }}
+              >
+                {STATUS_LABELS[status]}
+              </span>
+            )}
+            {isConfused && (
+              <span className="rounded-sm bg-pink-600 px-1 text-[7px] font-bold uppercase text-white">
+                Confused
+              </span>
+            )}
+            {badges.map((badge) => (
+              <span
+                key={badge.label}
+                title={badge.title}
+                className="rounded-sm px-1 text-[7px] font-bold uppercase text-white"
+                style={{ backgroundColor: badge.color }}
+              >
+                {badge.label}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
-      {showDetails && (
-        <>
-          <p className="mt-0.5 text-right text-[9px] tabular-nums">
-            {Math.max(0, currentHp)}/{maxHp}
-          </p>
-          <div className="mt-0.5 flex items-center gap-1">
-            <span
-              className="text-[7px] font-bold"
-              style={{ color: "var(--gba-gold)" }}
-            >
-              EXP
-            </span>
-            <div className="h-1 flex-1 overflow-hidden rounded-full bg-black/25">
-              <motion.div
-                className="h-full"
-                style={{ backgroundColor: "var(--gba-exp)" }}
-                animate={{
-                  width: `${Math.max(0, Math.min(1, xpRatio)) * 100}%`,
-                }}
-                transition={{ duration: 0.6, ease: "easeOut" }}
-              />
-            </div>
-          </div>
-        </>
-      )}
-
-      {(status !== "none" || isConfused || badges.length > 0) && (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {status !== "none" && (
-            <span
-              className="rounded-sm px-1 text-[7px] font-bold uppercase text-white"
-              style={{ backgroundColor: STATUS_COLORS[status] }}
-            >
-              {STATUS_LABELS[status]}
-            </span>
-          )}
-          {isConfused && (
-            <span className="rounded-sm bg-pink-600 px-1 text-[7px] font-bold uppercase text-white">
-              Confused
-            </span>
-          )}
-          {badges.map((badge) => (
-            <span
-              key={badge.label}
-              title={badge.title}
-              className="rounded-sm px-1 text-[7px] font-bold uppercase text-white"
-              style={{ backgroundColor: badge.color }}
-            >
-              {badge.label}
-            </span>
+      {types.length > 0 && (
+        <div className="invisible flex gap-0.5" aria-hidden>
+          {types.map((type) => (
+            <TypeIcon key={type} type={type} />
           ))}
         </div>
       )}

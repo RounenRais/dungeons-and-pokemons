@@ -23,6 +23,15 @@ Artists used: **Lorc**, **Delapouite**, **Carl Olsen**, **Caro Asercion**,
 Item sprites in the shop and bag (Poké Balls, potions, stones) are the real
 PokeAPI item sprites, not icons.
 
+The pixel type symbols next to the battle HP bars (`public/types/*.png`) are
+20×20 conversions of
+[pokemon-type-svg-icons](https://github.com/duiker101/pokemon-type-svg-icons)
+by **duiker101**, shared "for any use"; that set is based on a
+[Dribbble design](https://dribbble.com/shots/4862612-Pokedex-iOS-app). Each
+symbol was downsampled to a 13-pixel grid and placed on a shaded disc in the
+type's colour; the Fighting fist was redrawn by hand because its finger gaps
+vanish at that size.
+
 ## Fonts
 
 All served self-hosted through `next/font`, all under the SIL Open Font License:

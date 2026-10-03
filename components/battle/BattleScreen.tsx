@@ -701,6 +701,7 @@ export function BattleScreen({
             status={view.enemyStatus}
             isConfused={view.enemyConfused}
             badges={getVolatileBadges(battle.enemy)}
+            types={battle.enemy.pokemon.types}
             showDetails={false}
           />
         </div>
@@ -774,6 +775,7 @@ export function BattleScreen({
             status={view.playerStatus}
             isConfused={view.playerConfused}
             badges={getVolatileBadges(battle.player)}
+            types={battle.player.pokemon.types}
             showDetails
             xpRatio={xpRatio}
           />
@@ -1074,6 +1076,12 @@ function ArenaTrainer({
   );
 }
 
+const CATEGORY_LABELS: Record<Move["category"], string> = {
+  physical: "Physical",
+  special: "Special",
+  status: "Status",
+};
+
 function MoveButton({
   move,
   disabled,
@@ -1085,24 +1093,45 @@ function MoveButton({
   onFocus: () => void;
   onClick: () => void;
 }) {
+  const accuracy = move.accuracy === null ? "—" : `${move.accuracy}%`;
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      onMouseEnter={onFocus}
-      onFocus={onFocus}
-      disabled={disabled}
-      className="gba-text group flex items-center gap-1.5 text-left text-[10px] uppercase transition disabled:opacity-40"
-      style={{ color: "var(--gba-ink)" }}
-    >
-      <span
-        className="w-2 shrink-0 opacity-0 transition group-enabled:group-hover:opacity-100 group-enabled:group-focus:opacity-100"
-        aria-hidden
+    // Açıklama kutusu imleç ya da klavye odağı butondayken görünüyor;
+    // devre dışı bir hareketin de ne yaptığı okunabilsin diye dış kapta.
+    <div className="group/move relative min-w-0">
+      <button
+        type="button"
+        onClick={onClick}
+        onMouseEnter={onFocus}
+        onFocus={onFocus}
+        disabled={disabled}
+        aria-describedby={`move-tip-${move.id}`}
+        className="gba-text group flex w-full items-center gap-1.5 text-left text-[10px] uppercase transition disabled:opacity-40"
+        style={{ color: "var(--gba-ink)" }}
       >
-        ▶
-      </span>
-      <span className="truncate">{move.displayName}</span>
-    </button>
+        <span
+          className="w-2 shrink-0 opacity-0 transition group-enabled:group-hover:opacity-100 group-enabled:group-focus:opacity-100"
+          aria-hidden
+        >
+          ▶
+        </span>
+        <span className="truncate">{move.displayName}</span>
+      </button>
+
+      <div
+        id={`move-tip-${move.id}`}
+        role="tooltip"
+        className="gba-message-box gba-text pointer-events-none invisible absolute bottom-full left-0 z-50 mb-2 w-56 px-2.5 py-2 text-[9px] leading-relaxed opacity-0 transition-opacity group-focus-within/move:visible group-focus-within/move:opacity-100 group-hover/move:visible group-hover/move:opacity-100"
+      >
+        <p className="text-[10px] uppercase">{move.displayName}</p>
+        <p className="mt-0.5 opacity-75">
+          {CATEGORY_LABELS[move.category]} · ACC {accuracy}
+        </p>
+        <p className="mt-1 normal-case">
+          {move.description !== "" ? move.description : "No description."}
+        </p>
+      </div>
+    </div>
   );
 }
 
