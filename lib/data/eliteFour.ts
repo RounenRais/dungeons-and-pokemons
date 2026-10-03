@@ -48,7 +48,7 @@ export interface LeagueTrainerDefinition {
 
 const LORELEI: LeagueTrainerDefinition = {
   id: "lorelei",
-  name: "Lorelei",
+  name: "Isolde",
   spriteId: "lorelei-gen1",
   title: "Elite Four",
   type: "ice",
@@ -64,7 +64,7 @@ const LORELEI: LeagueTrainerDefinition = {
 
 const WILL: LeagueTrainerDefinition = {
   id: "will",
-  name: "Will",
+  name: "Ansel",
   spriteId: "will",
   title: "Elite Four",
   type: "psychic",
@@ -80,7 +80,7 @@ const WILL: LeagueTrainerDefinition = {
 
 const AARON: LeagueTrainerDefinition = {
   id: "aaron",
-  name: "Aaron",
+  name: "Corwin",
   spriteId: "aaron",
   title: "Elite Four",
   type: "bug",
@@ -88,7 +88,7 @@ const AARON: LeagueTrainerDefinition = {
   aiProfile: "aggressive",
   team: [469, 416, 214, 402, 452],
   dialogue: {
-    intro: "Welcome. I am Aaron, and I love bug Pokémon.",
+    intro: "Welcome. I am Corwin, and I love bug Pokémon.",
     defeat: "I lost, and yet I feel fine about it. Go on.",
     victory: "Bug Pokémon are stronger than anyone believes.",
   },
@@ -96,7 +96,7 @@ const AARON: LeagueTrainerDefinition = {
 
 const BRUNO: LeagueTrainerDefinition = {
   id: "bruno",
-  name: "Bruno",
+  name: "Bastian",
   spriteId: "bruno",
   title: "Elite Four",
   type: "fighting",
@@ -112,7 +112,7 @@ const BRUNO: LeagueTrainerDefinition = {
 
 const KAREN: LeagueTrainerDefinition = {
   id: "karen",
-  name: "Karen",
+  name: "Nyx",
   spriteId: "karen",
   title: "Elite Four",
   type: "dark",
@@ -128,7 +128,7 @@ const KAREN: LeagueTrainerDefinition = {
 
 const BERTHA: LeagueTrainerDefinition = {
   id: "bertha",
-  name: "Bertha",
+  name: "Gerda",
   spriteId: "bertha",
   title: "Elite Four",
   type: "ground",
@@ -144,7 +144,7 @@ const BERTHA: LeagueTrainerDefinition = {
 
 const AGATHA: LeagueTrainerDefinition = {
   id: "agatha",
-  name: "Agatha",
+  name: "Morwen",
   spriteId: "agatha-gen1",
   title: "Elite Four",
   type: "ghost",
@@ -152,15 +152,15 @@ const AGATHA: LeagueTrainerDefinition = {
   aiProfile: "status",
   team: [94, 42, 93, 24, 94],
   dialogue: {
-    intro: "Oak's taken a lot of interest in you, child.",
-    defeat: "You win. Oak may have been right about you after all.",
+    intro: "The Professor has taken a lot of interest in you, child.",
+    defeat: "You win. The Professor may have been right about you after all.",
     victory: "You disappoint me, child. Go home.",
   },
 };
 
 const GLACIA: LeagueTrainerDefinition = {
   id: "glacia",
-  name: "Glacia",
+  name: "Frida",
   spriteId: "glacia",
   title: "Elite Four",
   type: "ice",
@@ -176,7 +176,7 @@ const GLACIA: LeagueTrainerDefinition = {
 
 const LUCIAN: LeagueTrainerDefinition = {
   id: "lucian",
-  name: "Lucian",
+  name: "Soren",
   spriteId: "lucian",
   title: "Elite Four",
   type: "psychic",
@@ -192,7 +192,7 @@ const LUCIAN: LeagueTrainerDefinition = {
 
 const LANCE: LeagueTrainerDefinition = {
   id: "lance",
-  name: "Lance",
+  name: "Varro",
   spriteId: "lance",
   title: "Elite Four",
   type: "dragon",
@@ -200,7 +200,7 @@ const LANCE: LeagueTrainerDefinition = {
   aiProfile: "aggressive",
   team: [130, 148, 148, 142, 149],
   dialogue: {
-    intro: "I am Lance, the dragon master. There is no rest for you here.",
+    intro: "I am Varro, the dragon master. There is no rest for you here.",
     defeat: "…That was a fine battle. You have earned your place.",
     victory: "Dragons are the strongest. I have proven it again.",
   },
@@ -208,7 +208,7 @@ const LANCE: LeagueTrainerDefinition = {
 
 const SIDNEY: LeagueTrainerDefinition = {
   id: "sidney",
-  name: "Sidney",
+  name: "Reeve",
   spriteId: "sidney",
   title: "Elite Four",
   type: "dark",
@@ -224,7 +224,7 @@ const SIDNEY: LeagueTrainerDefinition = {
 
 const FLINT: LeagueTrainerDefinition = {
   id: "flint",
-  name: "Flint",
+  name: "Brann",
   spriteId: "flint",
   title: "Elite Four",
   type: "fire",
@@ -260,7 +260,7 @@ export const ELITE_FOUR_COUNT = ELITE_FOUR_SLOTS.length;
 
 const BLUE: LeagueTrainerDefinition = {
   id: "blue",
-  name: "Blue",
+  name: "Rhett",
   spriteId: "blue",
   title: "Champion",
   type: "normal",
@@ -276,7 +276,7 @@ const BLUE: LeagueTrainerDefinition = {
 
 const CYNTHIA: LeagueTrainerDefinition = {
   id: "cynthia",
-  name: "Cynthia",
+  name: "Ilsa",
   spriteId: "cynthia",
   title: "Champion",
   type: "steel",
@@ -292,7 +292,7 @@ const CYNTHIA: LeagueTrainerDefinition = {
 
 const STEVEN: LeagueTrainerDefinition = {
   id: "steven",
-  name: "Steven",
+  name: "Cassius",
   spriteId: "steven",
   title: "Champion",
   type: "steel",
@@ -308,7 +308,7 @@ const STEVEN: LeagueTrainerDefinition = {
 
 const WALLACE: LeagueTrainerDefinition = {
   id: "wallace",
-  name: "Wallace",
+  name: "Lorcan",
   spriteId: "wallace",
   title: "Champion",
   type: "water",

@@ -111,7 +111,7 @@ export interface TrainerDefinition {
 const NORMAL_TRAINERS: TrainerDefinition[] = [
   {
     id: "youngster-joey",
-    name: "Joey",
+    name: "Tam",
     className: "Youngster",
     spriteId: "youngster",
     tier: "normal",
@@ -403,7 +403,7 @@ const NORMAL_TRAINERS: TrainerDefinition[] = [
 const REMATCHES: TrainerDefinition[] = [
   {
     id: "youngster-joey-rematch",
-    name: "Joey",
+    name: "Tam",
     className: "Youngster",
     spriteId: "youngster",
     tier: "normal",

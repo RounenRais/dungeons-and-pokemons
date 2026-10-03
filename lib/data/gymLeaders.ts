@@ -97,7 +97,7 @@ function badge(
 
 const BROCK: GymLeaderDefinition = {
   id: "brock",
-  name: "Brock",
+  name: "Tor",
   spriteId: "brock",
   type: "rock",
   aceSpeciesId: 95, // Onix
@@ -124,7 +124,7 @@ const BROCK: GymLeaderDefinition = {
 
 const FALKNER: GymLeaderDefinition = {
   id: "falkner",
-  name: "Falkner",
+  name: "Aeron",
   spriteId: "falkner",
   type: "flying",
   aceSpeciesId: 17, // Pidgeotto
@@ -143,7 +143,7 @@ const FALKNER: GymLeaderDefinition = {
 
 const ROXANNE: GymLeaderDefinition = {
   id: "roxanne",
-  name: "Roxanne",
+  name: "Shale",
   spriteId: "roxanne",
   type: "rock",
   aceSpeciesId: 299, // Nosepass
@@ -166,7 +166,7 @@ const ROXANNE: GymLeaderDefinition = {
 
 const MISTY: GymLeaderDefinition = {
   id: "misty",
-  name: "Misty",
+  name: "Marin",
   spriteId: "misty",
   type: "water",
   aceSpeciesId: 121, // Starmie
@@ -185,7 +185,7 @@ const MISTY: GymLeaderDefinition = {
 
 const BUGSY: GymLeaderDefinition = {
   id: "bugsy",
-  name: "Bugsy",
+  name: "Pip",
   spriteId: "bugsy",
   type: "bug",
   aceSpeciesId: 123, // Scyther
@@ -204,7 +204,7 @@ const BUGSY: GymLeaderDefinition = {
 
 const BRAWLY: GymLeaderDefinition = {
   id: "brawly",
-  name: "Brawly",
+  name: "Kade",
   spriteId: "brawly",
   type: "fighting",
   aceSpeciesId: 297, // Hariyama
@@ -227,7 +227,7 @@ const BRAWLY: GymLeaderDefinition = {
 
 const SURGE: GymLeaderDefinition = {
   id: "ltsurge",
-  name: "Lt. Surge",
+  name: "Volt",
   spriteId: "ltsurge",
   type: "electric",
   aceSpeciesId: 26, // Raichu
@@ -246,7 +246,7 @@ const SURGE: GymLeaderDefinition = {
 
 const WHITNEY: GymLeaderDefinition = {
   id: "whitney",
-  name: "Whitney",
+  name: "Posy",
   spriteId: "whitney",
   type: "normal",
   aceSpeciesId: 241, // Miltank
@@ -265,7 +265,7 @@ const WHITNEY: GymLeaderDefinition = {
 
 const WATTSON: GymLeaderDefinition = {
   id: "wattson",
-  name: "Wattson",
+  name: "Amos",
   spriteId: "wattson",
   type: "electric",
   aceSpeciesId: 310, // Manectric
@@ -288,7 +288,7 @@ const WATTSON: GymLeaderDefinition = {
 
 const ERIKA: GymLeaderDefinition = {
   id: "erika",
-  name: "Erika",
+  name: "Fern",
   spriteId: "erika",
   type: "grass",
   aceSpeciesId: 45, // Vileplume
@@ -307,7 +307,7 @@ const ERIKA: GymLeaderDefinition = {
 
 const MORTY: GymLeaderDefinition = {
   id: "morty",
-  name: "Morty",
+  name: "Ashby",
   spriteId: "morty",
   type: "ghost",
   aceSpeciesId: 94, // Gengar
@@ -326,7 +326,7 @@ const MORTY: GymLeaderDefinition = {
 
 const FLANNERY: GymLeaderDefinition = {
   id: "flannery",
-  name: "Flannery",
+  name: "Cinda",
   spriteId: "flannery",
   type: "fire",
   aceSpeciesId: 324, // Torkoal
@@ -349,7 +349,7 @@ const FLANNERY: GymLeaderDefinition = {
 
 const KOGA: GymLeaderDefinition = {
   id: "koga",
-  name: "Koga",
+  name: "Hemlock",
   spriteId: "koga",
   type: "poison",
   aceSpeciesId: 110, // Weezing
@@ -368,7 +368,7 @@ const KOGA: GymLeaderDefinition = {
 
 const CHUCK: GymLeaderDefinition = {
   id: "chuck",
-  name: "Chuck",
+  name: "Dorn",
   spriteId: "chuck",
   type: "fighting",
   aceSpeciesId: 62, // Poliwrath
@@ -387,7 +387,7 @@ const CHUCK: GymLeaderDefinition = {
 
 const NORMAN: GymLeaderDefinition = {
   id: "norman",
-  name: "Norman",
+  name: "Edric",
   spriteId: "norman",
   type: "normal",
   aceSpeciesId: 289, // Slaking
@@ -410,7 +410,7 @@ const NORMAN: GymLeaderDefinition = {
 
 const SABRINA: GymLeaderDefinition = {
   id: "sabrina",
-  name: "Sabrina",
+  name: "Seren",
   spriteId: "sabrina",
   type: "psychic",
   aceSpeciesId: 65, // Alakazam
@@ -429,7 +429,7 @@ const SABRINA: GymLeaderDefinition = {
 
 const JASMINE: GymLeaderDefinition = {
   id: "jasmine",
-  name: "Jasmine",
+  name: "Ferra",
   spriteId: "jasmine",
   type: "steel",
   aceSpeciesId: 208, // Steelix
@@ -448,7 +448,7 @@ const JASMINE: GymLeaderDefinition = {
 
 const WINONA: GymLeaderDefinition = {
   id: "winona",
-  name: "Winona",
+  name: "Skye",
   spriteId: "winona",
   type: "flying",
   aceSpeciesId: 334, // Altaria
@@ -471,7 +471,7 @@ const WINONA: GymLeaderDefinition = {
 
 const BLAINE: GymLeaderDefinition = {
   id: "blaine",
-  name: "Blaine",
+  name: "Calder",
   spriteId: "blaine",
   type: "fire",
   aceSpeciesId: 59, // Arcanine
@@ -482,7 +482,7 @@ const BLAINE: GymLeaderDefinition = {
   ],
   badge: badge("volcano", "Volcano Badge", "fire", "focus", "haggler"),
   dialogue: {
-    intro: "Hah! I am Blaine, the hot-headed quiz master!",
+    intro: "Hah! I am Calder, the hot-headed quiz master!",
     defeat: "You have burned me out. Take the Volcano Badge.",
     victory: "You got burned! Come back when you can take the heat.",
   },
@@ -490,7 +490,7 @@ const BLAINE: GymLeaderDefinition = {
 
 const PRYCE: GymLeaderDefinition = {
   id: "pryce",
-  name: "Pryce",
+  name: "Rime",
   spriteId: "pryce",
   type: "ice",
   aceSpeciesId: 221, // Piloswine
@@ -509,7 +509,7 @@ const PRYCE: GymLeaderDefinition = {
 
 const TATE: GymLeaderDefinition = {
   id: "tate",
-  name: "Tate",
+  name: "Orin",
   spriteId: "tate",
   type: "psychic",
   aceSpeciesId: 344, // Claydol
@@ -532,7 +532,7 @@ const TATE: GymLeaderDefinition = {
 
 const GIOVANNI: GymLeaderDefinition = {
   id: "giovanni",
-  name: "Giovanni",
+  name: "Vargas",
   spriteId: "giovanni",
   type: "ground",
   aceSpeciesId: 34, // Nidoking
@@ -551,7 +551,7 @@ const GIOVANNI: GymLeaderDefinition = {
 
 const CLAIR: GymLeaderDefinition = {
   id: "clair",
-  name: "Clair",
+  name: "Draya",
   spriteId: "clair",
   type: "dragon",
   aceSpeciesId: 230, // Kingdra
@@ -562,7 +562,7 @@ const CLAIR: GymLeaderDefinition = {
   ],
   badge: badge("rising", "Rising Badge", "dragon", "focus", "swift-step"),
   dialogue: {
-    intro: "I am Clair. The world's best dragon master.",
+    intro: "I am Draya. The world's best dragon master.",
     defeat: "…It seems I have lost. The Rising Badge is yours.",
     victory: "You see? Dragons do not lose.",
   },
@@ -570,7 +570,7 @@ const CLAIR: GymLeaderDefinition = {
 
 const JUAN: GymLeaderDefinition = {
   id: "juan",
-  name: "Juan",
+  name: "Delmar",
   spriteId: "juan",
   type: "water",
   aceSpeciesId: 230, // Kingdra
