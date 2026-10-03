@@ -5,6 +5,7 @@ import {
   applyExperience,
   calculateXpGain,
   EXP_SHARE_RATE,
+  getSharedXp,
   getMovesLearnedAtLevels,
   getTotalXpForLevel,
   getXpToNextLevel,
@@ -258,11 +259,25 @@ check('Zincir sonunda tür güncel', bigJump.member.pokemonId, bigJump.evolution
     false,
   );
   check(
-    'Pay yarim',
+    'Geride kalan yedek yetisme bonusu aliyor',
     on.sharedExperience[0].xpGained,
-    Math.max(1, Math.floor(on.xpGained * EXP_SHARE_RATE)),
+    getSharedXp(on.xpGained, bench, on.member.level),
   );
-  check('Pay sahadaki uyenin payindan az', on.sharedExperience[0].xpGained < on.xpGained, true);
+  check(
+    'Bonus yarim paydan fazla',
+    on.sharedExperience[0].xpGained > Math.floor(on.xpGained * EXP_SHARE_RATE),
+    true,
+  );
+  check(
+    'Bonus yedegi sahadakinin levelini gecirmiyor',
+    on.sharedExperience[0].levelAfter <= on.member.level,
+    true,
+  );
+  check(
+    'Ayni leveldeki yedek yarim pay aliyor',
+    getSharedXp(1000, { ...bench, level: 15, xp: 0 }, 15),
+    Math.floor(1000 * EXP_SHARE_RATE),
+  );
   check('Yedek indeksi korunuyor', on.sharedExperience[0].index, 1);
   console.log(
     `INFO  savasan +${on.xpGained} XP, yedek +${on.sharedExperience[0].xpGained} XP ` +

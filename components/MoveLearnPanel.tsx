@@ -6,7 +6,7 @@
 import { GameIcon } from "@/components/icons/GameIcons";
 import { TYPE_COLORS } from "@/lib/data/typeChart";
 import { teachMove } from "@/lib/game/progression";
-import type { Move, TeamMember } from "@/lib/types";
+import type { Move, Pokemon, TeamMember } from "@/lib/types";
 
 export type MoveSource = "level-up" | "reward" | "chest";
 
@@ -21,6 +21,12 @@ interface MoveLearnPanelProps {
   member: TeamMember;
   /** Ekranda gösterilecek Pokémon adı. */
   name: string;
+  /**
+   * Hamleyi öğrenecek Pokémon — verilirse panelin başında resmi ve adı
+   * görünür. Savaş sonunda yedekler de hamle öğrendiği için hangisine
+   * öğretildiği belli olmalı.
+   */
+  pokemon?: Pokemon;
   source: MoveSource;
   onResolve: (member: TeamMember, log: string) => void;
 }
@@ -29,15 +35,22 @@ export function MoveLearnPanel({
   move,
   member,
   name,
+  pokemon,
   source,
   onResolve,
 }: MoveLearnPanelProps) {
   const hasFreeSlot = member.moves.length < 4;
+  const header =
+    pokemon !== undefined ? (
+      <LearnerBadge pokemon={pokemon} member={member} name={name} />
+    ) : (
+      <GameIcon name="sparkles" className="mx-auto h-10 w-10" />
+    );
 
   if (hasFreeSlot) {
     return (
       <div className="text-center">
-        <GameIcon name="sparkles" className="mx-auto h-10 w-10" />
+        {header}
         <h2 className="mt-2 text-lg font-bold">New move: {move.displayName}</h2>
         <p className="mt-1 text-xs text-[var(--ink-faint)]">
           {SOURCE_LABELS[source]}
@@ -66,12 +79,12 @@ export function MoveLearnPanel({
 
   return (
     <div className="text-center">
-      <GameIcon name="sparkles" className="mx-auto h-10 w-10" />
+      {header}
       <h2 className="mt-2 text-lg font-bold">
-        {move.displayName} can be learned
+        {name} wants to learn {move.displayName}
       </h2>
       <p className="mt-1 text-sm text-[var(--ink-soft)]">
-        It already knows four moves. Which one should it forget?
+        {name} already knows four moves. Which one should it forget?
       </p>
 
       <div className="mt-4">
@@ -108,6 +121,39 @@ export function MoveLearnPanel({
       >
         Don&apos;t learn it
       </button>
+    </div>
+  );
+}
+
+/** Hamleyi öğrenecek Pokémon'un resmi, adı ve level'ı. */
+function LearnerBadge({
+  pokemon,
+  member,
+  name,
+}: {
+  pokemon: Pokemon;
+  member: TeamMember;
+  name: string;
+}) {
+  const sprite =
+    (member.isShiny ? pokemon.sprites.frontShiny : null) ??
+    pokemon.sprites.front;
+  return (
+    <div className="flex flex-col items-center">
+      {sprite !== null && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={sprite}
+          alt={name}
+          className="h-20 w-20 object-contain [image-rendering:pixelated]"
+        />
+      )}
+      <p className="text-sm font-semibold">
+        {name}{" "}
+        <span className="font-normal text-[var(--ink-faint)]">
+          Lv {member.level}
+        </span>
+      </p>
     </div>
   );
 }

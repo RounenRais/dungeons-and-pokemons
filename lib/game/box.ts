@@ -230,7 +230,7 @@ const RELEASE_MESSAGES: Record<ReleaseRejection, string> = {
   "last-usable":
     "This is your last Pokémon that can still battle. You cannot release it.",
   "is-active":
-    "This Pokémon is the one you send out. Choose a different active Pokémon first.",
+    "This is your active Pokémon. Choose a different active Pokémon first.",
 };
 
 export function describeReleaseRejection(reason: ReleaseRejection): string {

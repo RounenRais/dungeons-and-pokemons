@@ -153,7 +153,7 @@ export function BoxPanel({
                     <>
                       {index !== activeIndex && member.currentHp > 0 && (
                         <CardButton
-                          label="Send out"
+                          label="Make active"
                           onClick={() => onSetActive(index)}
                         />
                       )}
@@ -278,7 +278,7 @@ function MemberCard({
           {getMemberName(member, pokemon)}
           {isActive && (
             <span className="ml-1.5 text-[9px] font-bold uppercase text-[var(--poke-red)]">
-              out
+              active
             </span>
           )}
         </p>

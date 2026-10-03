@@ -45,6 +45,11 @@ export interface MapEvent {
   title: string;
   text: string;
   art: EventArt;
+  /**
+   * Olayda bir trainer varsa: savaşa dönerse vahşi değil trainer savaşı açılır.
+   * `trainerId` bir Showdown trainer kimliği (bkz. lib/data/showdownTrainers.ts).
+   */
+  speaker?: { trainerId: string; name: string; role?: string };
   options: EventOption[];
 }
 
@@ -126,6 +131,7 @@ export const MAP_EVENTS: MapEvent[] = [
       speciesId: 68,
       caption: "His Machamp, unimpressed",
     },
+    speaker: { trainerId: "veteran", name: "Bram", role: "Eating lunch" },
     options: [
       {
         label: "Ask for a match",
@@ -199,6 +205,11 @@ export const MAP_EVENTS: MapEvent[] = [
     title: "A Toll on the Road",
     text: "Someone in a black uniform is standing in the middle of the path with a Koffing at his heel. He holds out a hand.",
     art: { kind: "pokemon", speciesId: 109, caption: "Koffing, idling" },
+    speaker: {
+      trainerId: "rocketgrunt",
+      name: "Dace",
+      role: "Collecting a toll",
+    },
     options: [
       {
         label: "Refuse",

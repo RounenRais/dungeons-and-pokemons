@@ -6,8 +6,8 @@
 import {
   applyExperience,
   calculateXpGain,
-  EXP_SHARE_RATE,
   getMovesLearnedAtLevels,
+  getSharedXp,
 } from "./leveling";
 import {
   calculateGoldReward,
@@ -17,7 +17,7 @@ import {
 } from "./rewards";
 import { createRunModifiers, type RunModifiers } from "./modifiers";
 import { calculateMaxHp } from "./stats";
-import { createTeamMember } from "./team";
+import { capCaughtMember, createTeamMember } from "./team";
 import type { RandomFn } from "./rng";
 import {
   findAutomaticEvolution,
@@ -130,6 +130,11 @@ export interface SharedExperience {
   evolution: EvolutionOutcome | null;
   /** Boş hamle slotu varsa otomatik öğrenilen hareketler. */
   learnedMoves: Move[];
+  /**
+   * Dört hamlesi dolu olduğu için oyuncuya sorulacak hareketler.
+   * Savaş sonu akışında yedeğin adı ve resmiyle hamle öğrenme paneli açılıyor.
+   */
+  pendingMoves: Move[];
 }
 
 export interface ResolveVictoryArgs {
@@ -206,12 +211,16 @@ async function buildCatchTarget(
       args.captureResolution?.phase === "capture-failed",
     attemptUsed: args.captureResolution?.attemptUsed ?? false,
     catchable: true,
-    member: createTeamMember(args.enemyPokemon, {
-      level: args.enemyMember.level,
-      moves: args.enemyMember.moves,
-      isShiny: args.enemyMember.isShiny,
-      growthRate,
-    }),
+    // Yakalama panelinde de takıma gireceği level görünsün (en fazla 100).
+    member: capCaughtMember(
+      createTeamMember(args.enemyPokemon, {
+        level: args.enemyMember.level,
+        moves: args.enemyMember.moves,
+        isShiny: args.enemyMember.isShiny,
+        growthRate,
+      }),
+      args.enemyPokemon,
+    ),
   };
 }
 
@@ -306,25 +315,26 @@ async function applyAutomaticEvolutions(
  */
 
 /**
- * EXP Share: savaşa girmeyen üyelere yarım pay dağıtır.
+ * EXP Share: savaşa girmeyen üyelere pay dağıtır (bkz. `getSharedXp` —
+ * yarım pay + geride kalanlara yetişme bonusu).
  *
- * Yedekler de level atlar, evrimleşir ve boş slotları varsa yeni hamlelerini
- * öğrenir. Boş slot yoksa hamle sessizce atlanıyor — sahada olmayan bir
- * Pokémon için oyuncuyu "hangisini sileyim?" diye sıraya dizmek, savaş sonu
- * akışını bir muhasebe ekranına çeviriyor. Dört hamlesi dolu bir yedeğin
- * setini oyuncu takım panelinden kendisi değiştirebiliyor.
+ * Yedekler de level atlar, evrimleşir ve yeni hamlelerini öğrenir. Boş slot
+ * varsa hamle doğrudan öğreniliyor; dört hamle doluysa `pendingMoves`e
+ * düşüyor ve savaş sonu akışı oyuncuya o yedeğin adıyla soruyor. Eskiden bu
+ * hamleler sessizce atlanıyordu ve yedekler eski setleriyle geride kalıyordu.
  *
  * Bayılmış üyeler pay almaz (mainline kuralı).
  */
 async function shareExperienceWithParty(
   party: readonly PartyMemberInput[],
   xpGained: number,
+  leaderLevel: number,
 ): Promise<SharedExperience[]> {
-  const share = Math.max(1, Math.floor(xpGained * EXP_SHARE_RATE));
   const results: SharedExperience[] = [];
 
   for (const entry of party) {
     if (entry.member.currentHp <= 0) continue;
+    const share = getSharedXp(xpGained, entry.member, leaderLevel);
 
     const experience = applyExperience(entry.member, entry.pokemon, share);
     const evolutionResult =
@@ -334,8 +344,9 @@ async function shareExperienceWithParty(
 
     let member = evolutionResult.member;
     const learnedMoves: Move[] = [];
+    const pendingMoves: Move[] = [];
 
-    if (experience.levelsGained.length > 0 && member.moves.length < 4) {
+    if (experience.levelsGained.length > 0) {
       const learnedIds = getMovesLearnedAtLevels(
         evolutionResult.pokemon,
         experience.levelsGained,
@@ -344,9 +355,12 @@ async function shareExperienceWithParty(
       if (learnedIds.length > 0) {
         const moves = await getMoves(learnedIds);
         for (const move of moves) {
-          if (member.moves.length >= 4) break;
-          member = teachMove(member, move, null);
-          learnedMoves.push(move);
+          if (member.moves.length < 4) {
+            member = teachMove(member, move, null);
+            learnedMoves.push(move);
+          } else {
+            pendingMoves.push(move);
+          }
         }
       }
     }
@@ -360,6 +374,7 @@ async function shareExperienceWithParty(
       levelAfter: member.level,
       evolution: evolutionResult.evolution,
       learnedMoves,
+      pendingMoves,
     });
   }
 
@@ -484,7 +499,7 @@ export async function resolveVictory(
 
   const sharedExperience =
     expShare && party.length > 0
-      ? await shareExperienceWithParty(party, xpGained)
+      ? await shareExperienceWithParty(party, xpGained, currentMember.level)
       : [];
 
   return {

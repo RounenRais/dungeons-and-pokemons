@@ -1166,14 +1166,19 @@ function applySecondaryEffects(
   if (move.statChanges.length > 0) {
     const chance = move.meta.statChance > 0 ? move.meta.statChance : 100;
     if (random() * 100 < chance) {
-      // Hasar veren hareketlerde pozitif değişimler kullanıcıya, negatifler hedefe gider.
-      const isBuff = move.statChanges.every((change) => change.change > 0);
+      // PokeAPI'de "damage-raise" kullanıcıyı (Close Combat/Overheat gibi
+      // kendi stat'ını düşürenler dahil), "damage-lower" hedefi etkiler.
+      // Kategori yoksa işarete bak: artış kullanıcıya, düşüş hedefe.
+      const selfTarget =
+        move.meta.category === "damage-raise" ||
+        (move.meta.category !== "damage-lower" &&
+          move.statChanges.every((change) => change.change > 0));
       applyStatChanges(
         state,
-        isBuff ? attacker : defender,
+        selfTarget ? attacker : defender,
         move,
         events,
-        !isBuff,
+        !selfTarget,
       );
     }
   }
@@ -2469,6 +2474,13 @@ export interface BattleItemUse {
   heal?: number | "full";
   /** Durum efektini temizler mi? */
   cures?: boolean;
+  /**
+   * Eşya sahadaki değil, yedekteki bir Pokémon'a kullanıldı.
+   *
+   * Yedekler motorda yaşamıyor (takım dizisi ekranda tutuluyor), o yüzden
+   * etkiyi ekran uyguluyor; motor sadece turu harcıyor ve mesajı yazıyor.
+   */
+  benchTarget?: { message: string };
 }
 
 /** Oyuncu bir turda hamle yapar, eşya kullanır ya da Pokémon değiştirir. */
@@ -2496,6 +2508,11 @@ function applyBattleItem(
   events: BattleEvent[],
 ): void {
   events.push({ kind: "item-used", side: combatant.side, label: item.label });
+
+  if (item.benchTarget !== undefined) {
+    events.push({ kind: "message", text: item.benchTarget.message });
+    return;
+  }
 
   if (item.heal !== undefined) {
     const amount =

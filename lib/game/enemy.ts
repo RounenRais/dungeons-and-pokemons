@@ -353,13 +353,15 @@ export function getEnemyIv(kind: EncounterKind, tileIndex: number): number {
 }
 
 /**
- * Türü kart tarafından sabitlenen dövüşlerin güç primi.
+ * Türü kart tarafından sabitlenen dövüşlerin ("?" olayları) güç primi.
  *
- * Boss'unkinden düşük — bunlar act'in doruğu değil, yoldaki bir olay. Ama
- * sıfır da değil: "elite" etiketiyle başlayan bir dövüşün sıradan bir vahşi
- * karşılaşmadan daha ağır olması gerekiyor.
+ * Negatif: olay savaşı bir RPG sahnesinin parçası, zorlu bir sınav değil.
+ * Sıradan vahşi rakipler oyuncunun BST'sinin biraz altından seçiliyor; sabit
+ * tür (Snorlax, Machamp...) level ile o seviyeye çekiliyor. Önceden bu prim
+ * `kind !== "wild"` koşulu yüzünden hiç uygulanmıyordu ve olaydaki Snorlax
+ * oyuncunun level'ında, ham BST farkıyla çıkıyordu.
  */
-export const EVENT_FIGHT_PREMIUM = 0.2;
+export const EVENT_FIGHT_PREMIUM = -0.1;
 
 /** Düşman AI'ının ustalığı (0 = rastgele, 1 = en iyi hamle). */
 export function getEnemySkill(kind: EncounterKind, tileIndex: number): number {
@@ -581,12 +583,20 @@ export async function createWildEnemy(
     options.level ??
     (isOpeningEncounter
       ? FIRST_ENCOUNTER_LEVEL
-      : options.speciesId !== undefined && kind !== "wild"
-      ? getScaledLevelForSpecies(
-          options.playerLevel,
-          options.playerBst,
-          options.speciesId,
-          EVENT_FIGHT_PREMIUM,
+      : options.speciesId !== undefined
+      ? Math.max(
+          options.storyMinimum ?? 1,
+          // Zayıf tür (Koffing) yukarı ölçeklenince oyuncunun 20 level
+          // üstüne çıkıyordu; olay savaşı oyuncunun level'ını geçmesin.
+          Math.min(
+            options.playerLevel,
+            getScaledLevelForSpecies(
+              options.playerLevel,
+              options.playerBst,
+              options.speciesId,
+              EVENT_FIGHT_PREMIUM,
+            ),
+          ),
         )
       : getEnemyLevel(
           options.playerLevel,

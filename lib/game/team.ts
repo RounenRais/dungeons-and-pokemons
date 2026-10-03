@@ -19,6 +19,31 @@ function createInstanceId(): string {
   return `pkm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/** Oyuncunun takımındaki bir Pokémon'un çıkabileceği en yüksek level. */
+export const MAX_MEMBER_LEVEL = 100;
+
+/**
+ * Yakalanan Pokémon'u takıma uygun hâle getirir: level 100'ü geçemez.
+ *
+ * Düşmanlar (özellikle efsanevi boss'lar) bilinçli olarak 100'ün üstüne
+ * ölçeklenebiliyor; ama yakalanınca o level takıma taşınıyordu ve Lv149 bir
+ * Pokémon'la biten koşular leaderboard'a kaydedilemiyordu (sınır 100). Max HP
+ * yeni level'a göre yeniden hesaplanıyor, yakalanan Pokémon dolu canla gelir.
+ */
+export function capCaughtMember(
+  member: TeamMember,
+  pokemon: Pokemon,
+): TeamMember {
+  if (member.level <= MAX_MEMBER_LEVEL) return member;
+  const maxHp = calculateMaxHp(
+    pokemon.baseStats,
+    MAX_MEMBER_LEVEL,
+    member.permanentBoosts,
+    member.ivs,
+  );
+  return { ...member, level: MAX_MEMBER_LEVEL, xp: 0, maxHp, currentHp: maxHp };
+}
+
 export interface CreateTeamMemberOptions {
   level: number;
   moves: Move[];

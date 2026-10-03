@@ -207,6 +207,7 @@ export function ChestOpening({
           move={loot.move}
           member={member}
           name={getMemberName(member, pokemon)}
+          pokemon={pokemon}
           source="chest"
           onResolve={(nextMember, log) =>
             onDone({

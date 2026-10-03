@@ -22,12 +22,7 @@
 
 import type { EventOption, MapEvent } from "@/lib/data/mapEvents";
 
-import type {
-  StoryArt,
-  StoryChoice,
-  StoryEvent,
-  StoryOutcome,
-} from "./types";
+import type { StoryArt, StoryChoice, StoryEvent, StoryOutcome } from "./types";
 
 /** Eski olayların toplandığı yay. */
 export const LEGACY_ARC = "wayside";
@@ -40,8 +35,12 @@ function slugify(label: string, index: number): string {
   return slug.length > 0 ? slug : `choice-${index}`;
 }
 
-function adaptOutcome(option: EventOption): StoryOutcome {
+function adaptOutcome(option: EventOption, event: MapEvent): StoryOutcome {
   const { outcome } = option;
+  // Kartta bir Pokémon gösteriliyorsa savaşta da o çıkmalı; eskiden bu bilgi
+  // çeviride düşüyordu ve kartta Snorlax varken rastgele bir tür geliyordu.
+  const shownSpecies =
+    event.art.kind === "pokemon" ? event.art.speciesId : undefined;
   return {
     text: outcome.text,
     ...(outcome.gold !== undefined ? { gold: outcome.gold } : {}),
@@ -52,10 +51,17 @@ function adaptOutcome(option: EventOption): StoryOutcome {
     ...(outcome.relic !== undefined ? { relic: outcome.relic } : {}),
     ...(outcome.chest !== undefined ? { chest: outcome.chest } : {}),
     ...(outcome.fight !== undefined ? { fight: outcome.fight } : {}),
+    ...(outcome.fight === true && shownSpecies !== undefined
+      ? { fightSpeciesId: shownSpecies }
+      : {}),
   };
 }
 
-function adaptChoice(option: EventOption, index: number): StoryChoice {
+function adaptChoice(
+  option: EventOption,
+  index: number,
+  event: MapEvent,
+): StoryChoice {
   const cost = option.outcome.gold;
   return {
     id: slugify(option.label, index),
@@ -63,7 +69,7 @@ function adaptChoice(option: EventOption, index: number): StoryChoice {
     // Eski formatta bedel metnin içinde yazıyordu; negatif altını ayrıca
     // "görünen maliyet" alanına taşıyoruz ki yeni ekran onu kutuda gösterebilsin.
     ...(cost !== undefined && cost < 0 ? { cost: { gold: -cost } } : {}),
-    outcome: adaptOutcome(option),
+    outcome: adaptOutcome(option, event),
   };
 }
 
@@ -96,7 +102,10 @@ export function adaptLegacyEvent(event: MapEvent): StoryEvent {
      */
     band: "intro",
     art: adaptArt(event.art),
-    choices: event.options.map(adaptChoice),
+    ...(event.speaker !== undefined ? { speaker: event.speaker } : {}),
+    choices: event.options.map((option, index) =>
+      adaptChoice(option, index, event),
+    ),
   };
 }
 
@@ -114,6 +123,8 @@ function adaptArt(art: MapEvent["art"]): StoryArt {
 }
 
 /** Eski havuzun tamamı, yeni şemada. */
-export function adaptAllLegacyEvents(events: readonly MapEvent[]): StoryEvent[] {
+export function adaptAllLegacyEvents(
+  events: readonly MapEvent[],
+): StoryEvent[] {
   return events.map(adaptLegacyEvent);
 }

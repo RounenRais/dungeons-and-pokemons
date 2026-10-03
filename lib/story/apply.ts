@@ -14,19 +14,30 @@ import type {
   CheckTier,
   StoryEvent,
   StoryOutcome,
+  StorySpeaker,
 } from "./types";
 
 /** Uygulanamayan, ekranın üstlenmesi gereken kısım. */
 export interface StoryFollowUp {
-  /** Zorlu bir savaş başlatılacak. */
-  fight?: { speciesId?: number };
+  /**
+   * Savaş başlatılacak.
+   *
+   * `speaker` varsa olayda konuşan bir trainer var: savaş onun adına bir
+   * TRAINER savaşı olarak açılıyor (yakalanamaz). Yoksa vahşi karşılaşma.
+   */
+  fight?: { speciesId?: number; speaker?: StorySpeaker };
   /** Bu tier'de bir kasa açılacak. */
   chest?: Rarity;
 }
 
 /** Bir seçeneğin, kontrol sonucuna göre hangi sonucu verdiği. */
 export function outcomeForTier(
-  choice: { outcome?: StoryOutcome; onSuccess?: StoryOutcome; onPartial?: StoryOutcome; onFailure?: StoryOutcome },
+  choice: {
+    outcome?: StoryOutcome;
+    onSuccess?: StoryOutcome;
+    onPartial?: StoryOutcome;
+    onFailure?: StoryOutcome;
+  },
   tier: CheckTier | null,
 ): StoryOutcome | undefined {
   if (tier === null) return choice.outcome;
@@ -108,6 +119,7 @@ export function applyStoryOutcome(
             ...(outcome.fightSpeciesId !== undefined
               ? { speciesId: outcome.fightSpeciesId }
               : {}),
+            ...(event.speaker !== undefined ? { speaker: event.speaker } : {}),
           },
         }
       : {}),

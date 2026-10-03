@@ -87,6 +87,40 @@ export const BOSS_XP_MULTIPLIER = 1.5;
  */
 export const EXP_SHARE_RATE = 0.5;
 
+/**
+ * Geride kalan yedeğin yetişme bonusu: sahadakinden her level geride için
+ * pay +%10, en fazla 1.5 kat.
+ *
+ * Sabit yarım pay yetmiyordu: XP ihtiyacı level'ın küpüyle büyüdüğü için
+ * yarım pay alan bir yedek, sahadakinin ~%79'unda takılı kalıyordu (Lv50'ye
+ * karşı ~Lv40). Bonus açığı kapatıyor; sahadakinin level'ını geçirmiyor.
+ */
+export const EXP_SHARE_CATCH_UP_PER_LEVEL = 0.1;
+export const EXP_SHARE_MAX_RATE = 1.5;
+
+/** Bir yedeğin bu savaştan alacağı EXP Share payı. */
+export function getSharedXp(
+  xpGained: number,
+  member: Pick<TeamMember, "level" | "xp" | "growthRate">,
+  leaderLevel: number,
+): number {
+  const baseShare = Math.max(1, Math.floor(xpGained * EXP_SHARE_RATE));
+  const gap = leaderLevel - member.level;
+  if (gap <= 0) return baseShare;
+
+  const rate = Math.min(
+    EXP_SHARE_MAX_RATE,
+    EXP_SHARE_RATE + gap * EXP_SHARE_CATCH_UP_PER_LEVEL,
+  );
+  const boosted = Math.floor(xpGained * rate);
+  // Bonus yedeği sahadakinin level'ına kadar taşır, öteye geçirmez.
+  const toLeader =
+    getTotalXpForLevel(leaderLevel, member.growthRate) -
+    getTotalXpForLevel(member.level, member.growthRate) -
+    member.xp;
+  return Math.max(baseShare, Math.min(boosted, toLeader));
+}
+
 /** Bir savaştan kazanılan XP. */
 export function calculateXpGain(
   enemyBaseExperience: number,

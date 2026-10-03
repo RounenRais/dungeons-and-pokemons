@@ -26,6 +26,7 @@ import { StoryEventRunner } from "@/components/story/StoryEventRunner";
 import { startBattle } from "@/lib/battle";
 import { getBossPhases } from "@/lib/data/bossPhases";
 import { getRelic, type RelicId } from "@/lib/data/relics";
+import { getShowdownTrainer } from "@/lib/data/showdownTrainers";
 import { getOfferableRelics, rollRelicOffer } from "@/lib/game/relicSlots";
 import {
   getCampVisitor,
@@ -38,10 +39,7 @@ import {
   type MapEvent,
 } from "@/lib/data/mapEvents";
 import type { ShopItem } from "@/lib/data/shopItems";
-import {
-  createBossEnemy,
-  createWildEnemy,
-} from "@/lib/game/enemy";
+import { createBossEnemy, createWildEnemy } from "@/lib/game/enemy";
 import { getTeamTopLevel } from "@/lib/game/team";
 import {
   isRetryNode,
@@ -303,7 +301,9 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
       );
     } catch (error) {
       store.addLog(
-        error instanceof Error ? error.message : "Could not prepare the battle.",
+        error instanceof Error
+          ? error.message
+          : "Could not prepare the battle.",
         "bad",
       );
     } finally {
@@ -325,10 +325,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     if (activeMember === null || activePokemon === null) return;
 
     store.registerTrainerSeen(encounter.sourceId);
-    store.addLog(
-      `${encounter.title} ${encounter.name} challenged you.`,
-      "bad",
-    );
+    store.addLog(`${encounter.title} ${encounter.name} challenged you.`, "bad");
 
     store.beginBattle(
       startBattle({
@@ -714,6 +711,71 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     setIsRestOpen(false);
   }
 
+  /**
+   * "?" olayında konuşan trainer'la dövüş.
+   *
+   * Eskiden bu dövüşler vahşi karşılaşma olarak açılıyordu: olayda bir trainer
+   * konuşurken savaşta "A wild X appeared!" çıkıyor ve Pokémon'u yakalanabiliyordu.
+   * Artık trainer'ın portresi, adı ve sınıfıyla bir trainer savaşı. Rakibin
+   * gücü vahşi olay dövüşüyle aynı (tek Pokémon, olay seviyesi) — olay bir
+   * RPG sahnesi, kadrolu bir trainer savaşı değil.
+   */
+  async function startEventTrainerBattle(
+    speaker: { trainerId: string; name: string },
+    speciesId?: number,
+  ) {
+    const store = useGameStore.getState();
+    const activeMember = selectActiveMember(store);
+    const activePokemon = selectPokemonFor(store, activeMember);
+    if (activeMember === null || activePokemon === null) return;
+
+    const referenceLevel = selectReferenceLevel(store);
+    const runMods = selectRunModifiers(store);
+    const stage = getLeagueStage(store.act);
+    const title = getShowdownTrainer(speaker.trainerId)?.className ?? "Trainer";
+
+    setIsLoadingBattle(true);
+    try {
+      const enemy = await createWildEnemy(store.player.position, {
+        kind: "wild",
+        playerLevel: Math.max(1, referenceLevel - runMods.wildLevelReduction),
+        playerBst: activePokemon.baseStatTotal,
+        playerTypes: activePokemon.types,
+        teamSize: store.player.team.length,
+        storyMinimum: stage.storyMinimum,
+        speciesId,
+      });
+      beginTrainerBattle({
+        kind: "trainer",
+        name: speaker.name,
+        title,
+        spriteId: speaker.trainerId,
+        aiProfile: "balanced",
+        dialogue: {
+          intro: `${speaker.name} sends out ${enemy.pokemon.displayName}!`,
+          defeat: "Fair enough. The road is yours.",
+          victory: "Come back when you are ready.",
+        },
+        lead: { pokemon: enemy.pokemon, member: enemy.member },
+        reserves: [],
+        teamSize: 1,
+        skill: enemy.skill,
+        goldReward: 0,
+        grantsRelic: false,
+        sourceId: `event:${speaker.trainerId}`,
+      });
+    } catch (error) {
+      store.addLog(
+        error instanceof Error
+          ? error.message
+          : "Could not prepare the battle.",
+        "bad",
+      );
+    } finally {
+      setIsLoadingBattle(false);
+    }
+  }
+
   function handleEventOutcome(outcome: EventOutcome) {
     const store = useGameStore.getState();
     const activeMember = selectActiveMember(store);
@@ -723,6 +785,7 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
       activeEvent?.art.kind === "pokemon"
         ? activeEvent.art.speciesId
         : undefined;
+    const eventSpeaker = activeEvent?.speaker;
 
     // Eski olaylar da hikâye geçmişine yazılıyor — `pickUnseenEvent` bu listeyi
     // okuyor, yani bir olay çözüldükten sonra havuzdan düşüyor.
@@ -772,11 +835,17 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     /*
      * Olayın başlattığı dövüş.
      *
-     * Tür kartta gösterilen Pokémon (`shownSpecies`); yakalanabilir, çünkü
-     * bu bir trainer savaşı değil — kartta bir Pokémon var ve oyuncunun ona
-     * top atmasını engelleyen bir sebep yok.
+     * Tür kartta gösterilen Pokémon (`shownSpecies`). Olayda trainer yoksa
+     * (Snorlax, Aipom) vahşi ve yakalanabilir; trainer varsa onun Pokémon'u.
      */
-    if (outcome.fight === true) void startWildBattle(shownSpecies, true);
+    if (outcome.fight === true) {
+      // Olayda bir trainer varsa (Veteran, Grunt) dövüş onun adına açılıyor.
+      if (eventSpeaker !== undefined) {
+        void startEventTrainerBattle(eventSpeaker, shownSpecies);
+      } else {
+        void startWildBattle(shownSpecies, true);
+      }
+    }
   }
 
   /** Hikâye olayı bitti: sonucu store'a zaten yazıldı, kalan ekran işleri burada. */
@@ -784,7 +853,12 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
     setActiveStoryEvent(null);
     if (followUp.chest !== undefined) setChestTier(followUp.chest);
     if (followUp.fight !== undefined) {
-      void startWildBattle(followUp.fight.speciesId, true);
+      const { speaker, speciesId } = followUp.fight;
+      if (speaker !== undefined) {
+        void startEventTrainerBattle(speaker, speciesId);
+      } else {
+        void startWildBattle(speciesId, true);
+      }
     }
   }
 
@@ -870,7 +944,8 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
   /** Elite Four turunda sıradaki üyenin adı — soluklanma panelinde geçiyor. */
   const nextEliteFourName =
     league.eliteFourDefeated.length < ELITE_FOUR_COUNT
-      ? getEliteFourEncounter(seed, league.eliteFourDefeated.length).trainer.name
+      ? getEliteFourEncounter(seed, league.eliteFourDefeated.length).trainer
+          .name
       : null;
 
   return (
@@ -976,7 +1051,8 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
           owned={relics}
           onPick={(id) => {
             const store = useGameStore.getState();
-            const before = store.relics.find((slot) => slot.id === id)?.level ?? 0;
+            const before =
+              store.relics.find((slot) => slot.id === id)?.level ?? 0;
             store.addRelic(id);
             const after =
               useGameStore.getState().relics.find((slot) => slot.id === id)
@@ -1100,18 +1176,14 @@ export function MapScreen({ onOpenGuide }: MapScreenProps) {
           storage={selectStorage({ player, box })}
           pokedex={pokedex}
           onSendToBox={(id) => useGameStore.getState().sendMemberToBox(id)}
-          onWithdraw={(id) =>
-            useGameStore.getState().withdrawMemberFromBox(id)
-          }
+          onWithdraw={(id) => useGameStore.getState().withdrawMemberFromBox(id)}
           onRelease={(id) => useGameStore.getState().releaseMember(id)}
           onSetActive={(index) => useGameStore.getState().setActiveIndex(index)}
           onClose={() => setIsBoxOpen(false)}
         />
       )}
 
-      {isCasinoOpen && (
-        <CasinoScreen onLeave={() => setIsCasinoOpen(false)} />
-      )}
+      {isCasinoOpen && <CasinoScreen onLeave={() => setIsCasinoOpen(false)} />}
       {activeStoryEvent !== null && (
         <StoryEventRunner
           event={activeStoryEvent}

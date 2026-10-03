@@ -42,6 +42,7 @@ import type { RunModifiers } from "@/lib/game/modifiers";
 import type { PartyMemberInput } from "@/lib/game/progression";
 import { getXpToNextLevel } from "@/lib/game/leveling";
 import { getShopItem } from "@/lib/data/shopItems";
+import { applyItem, canUseItem } from "@/lib/game/items";
 import { TYPE_COLORS } from "@/lib/data/typeChart";
 import { getBallSpriteUrl } from "@/lib/data/pokeballs";
 import { getMemberName } from "@/lib/game/team";
@@ -147,6 +148,12 @@ interface BattleScreenProps {
   inventory: InventoryEntry[];
   /** Eşya kullanıldığında envanterden düşülmesi için. */
   onConsumeItem: (itemId: string) => void;
+  /**
+   * Yedekteki bir üye savaş sırasında değişti (eşya kullanıldı). Kayda hemen
+   * yazılıyor: savaşın ortasında sayfa yenilenirse eşya harcanmış ama etkisi
+   * kaybolmuş olmasın.
+   */
+  onBenchMemberChange: (index: number, member: TeamMember) => void;
   /** Savaş ve sunum state'ini save'e yazar; switch/reload arena akışını bozmaz. */
   onStateChange: (state: BattleState) => void;
   /**
@@ -185,6 +192,7 @@ export function BattleScreen({
   teamSize,
   inventory,
   onConsumeItem,
+  onBenchMemberChange,
   onStateChange,
   onThrowBall,
   onLeaveCapture,
@@ -216,6 +224,8 @@ export function BattleScreen({
   const [hitSide, setHitSide] = useState<Side | null>(null);
   const [showResult, setShowResult] = useState(initialState.outcome !== "ongoing");
   const [isBagOpen, setIsBagOpen] = useState(false);
+  /** Çantadan seçilen, hedefi henüz seçilmemiş eşya. */
+  const [pendingItemId, setPendingItemId] = useState<string | null>(null);
   const hasTrainerIntro =
     initialState.trainer !== undefined && initialState.trainerIntroComplete !== true;
   const [sceneReady, setSceneReady] = useState(!hasTrainerIntro);
@@ -534,11 +544,64 @@ export function BattleScreen({
     });
   }
 
+  /**
+   * Çantadan eşya seçildi. Takımda başka Pokémon varsa önce hedef soruluyor:
+   * eşya yedekteki bir Pokémon'a da kullanılabilir.
+   */
   function handleUseItem(itemId: string) {
     const item = getShopItem(itemId);
     if (item === null || !item.usableInBattle) return;
 
     setIsBagOpen(false);
+    if (teamState.length > 1) {
+      setPendingItemId(itemId);
+      return;
+    }
+    applyItemToActive(itemId);
+  }
+
+  function handleItemTarget(index: number) {
+    const itemId = pendingItemId;
+    setPendingItemId(null);
+    if (itemId === null) return;
+    if (index === activeIdx) {
+      applyItemToActive(itemId);
+      return;
+    }
+
+    // Yedek: etki takım dizisine uygulanıyor, tur yine harcanıyor.
+    const item = getShopItem(itemId);
+    const target = teamState[index];
+    const pokemon =
+      target === undefined ? undefined : pokedex[target.pokemonId];
+    if (item === null || target === undefined || pokemon === undefined) return;
+    const result = applyItem(target, pokemon, itemId);
+    if (result === null) return;
+
+    const name = getMemberName(target, pokemon);
+    setTeamState(
+      teamState.map((member, i) => (i === index ? result.member : member)),
+    );
+    onBenchMemberChange(index, result.member);
+    onConsumeItem(itemId);
+    void runTurn({
+      kind: "item",
+      item: {
+        itemId,
+        label: item.label,
+        benchTarget: {
+          message:
+            item.effect.kind === "cure"
+              ? `${name} was cured.`
+              : `${name} recovered ${result.member.currentHp - target.currentHp} HP.`,
+        },
+      },
+    });
+  }
+
+  function applyItemToActive(itemId: string) {
+    const item = getShopItem(itemId);
+    if (item === null) return;
     onConsumeItem(itemId);
 
     void runTurn({
@@ -876,6 +939,22 @@ export function BattleScreen({
             items={battleItems}
             onUse={handleUseItem}
             onClose={() => setIsBagOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {pendingItemId !== null && (
+          <ItemTargetOverlay
+            itemId={pendingItemId}
+            team={syncActiveIntoTeam()}
+            activeIndex={activeIdx}
+            pokedex={pokedex}
+            onSelect={handleItemTarget}
+            onClose={() => {
+              setPendingItemId(null);
+              setIsBagOpen(true);
+            }}
           />
         )}
       </AnimatePresence>
@@ -1236,7 +1315,7 @@ function SwitchOverlay({
                       </span>
                       <span className="shrink-0 text-[11px] text-[var(--ink-faint)]">
                         Lv {member.level}
-                        {isActive && " · out"}
+                        {isActive && " · active"}
                       </span>
                     </div>
                     <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--paper-3)]">
@@ -1270,6 +1349,111 @@ function SwitchOverlay({
             Cancel
           </button>
         )}
+      </motion.div>
+    </motion.div>
+  );
+}
+
+/** Eşyanın hangi Pokémon'a kullanılacağı — sahadaki ya da yedekteki. */
+function ItemTargetOverlay({
+  itemId,
+  team,
+  activeIndex,
+  pokedex,
+  onSelect,
+  onClose,
+}: {
+  itemId: string;
+  team: TeamMember[];
+  activeIndex: number;
+  pokedex: Record<number, Pokemon>;
+  onSelect: (index: number) => void;
+  onClose: () => void;
+}) {
+  const item = getShopItem(itemId);
+  if (item === null) return null;
+
+  return (
+    <motion.div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(62,44,20,0.55)] p-4"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+    >
+      <motion.div
+        initial={{ y: 24, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 16, opacity: 0 }}
+        className="parchment-card w-[min(94vw,26rem)] p-5 shadow-2xl"
+      >
+        <h3 className="text-lg font-bold">Use {item.label} on…</h3>
+        <p className="mt-1 text-xs text-[var(--ink-faint)]">
+          Using an item costs your whole turn, even on a benched Pokémon.
+        </p>
+
+        <ul className="mt-3 space-y-2">
+          {team.map((member, index) => {
+            const pokemon = pokedex[member.pokemonId] ?? null;
+            const usable = canUseItem(member, item.effect);
+            const ratio =
+              member.maxHp > 0 ? member.currentHp / member.maxHp : 0;
+
+            return (
+              <li key={member.instanceId}>
+                <button
+                  type="button"
+                  disabled={!usable}
+                  onClick={() => onSelect(index)}
+                  className="flex w-full items-center gap-3 rounded-lg border border-[var(--ink-line)] px-3 py-2 text-left transition enabled:hover:border-emerald-500/60 enabled:hover:bg-emerald-500/10 disabled:opacity-40"
+                >
+                  {pokemon?.sprites.front != null && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={pokemon.sprites.front}
+                      alt={getMemberName(member, pokemon)}
+                      className="h-10 w-10 shrink-0 object-contain [image-rendering:pixelated]"
+                    />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="truncate text-sm font-medium">
+                        {getMemberName(member, pokemon)}
+                      </span>
+                      <span className="shrink-0 text-[11px] text-[var(--ink-faint)]">
+                        Lv {member.level}
+                        {index === activeIndex && " · active"}
+                        {member.status !== "none" && ` · ${member.status}`}
+                      </span>
+                    </div>
+                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--paper-3)]">
+                      <div
+                        className={`h-full ${
+                          ratio > 0.5
+                            ? "bg-emerald-500"
+                            : ratio > 0.2
+                              ? "bg-amber-400"
+                              : "bg-red-500"
+                        }`}
+                        style={{ width: `${ratio * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] text-[var(--ink-faint)]">
+                      {member.currentHp}/{member.maxHp} HP
+                    </span>
+                  </div>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-4 w-full rounded-full border border-[var(--ink-line)] px-6 py-2.5 text-sm text-[var(--ink)] transition hover:bg-[var(--paper-3)]"
+        >
+          Back
+        </button>
       </motion.div>
     </motion.div>
   );

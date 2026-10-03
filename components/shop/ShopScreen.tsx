@@ -75,6 +75,7 @@ export function ShopScreen({
           move={pendingTm.move}
           member={member}
           name={getMemberName(member, pokemon)}
+          pokemon={pokemon}
           source="chest"
           onResolve={(nextMember, log) => {
             onLearnTm(nextMember, pendingTm.price, log);

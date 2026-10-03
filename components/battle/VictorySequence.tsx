@@ -98,16 +98,34 @@ interface VictorySequenceProps {
 type Step =
   | { kind: "xp" }
   | { kind: "evolution" }
+  /** EXP Share ile level atlayıp evrimleşen bir yedek. */
+  | { kind: "shared-evolution"; sharedIndex: number }
   | { kind: "catch" }
   | { kind: "move"; moveIndex: number }
+  /** EXP Share ile level atlayan bir yedeğin, 4 hamlesi dolu olduğu için sorulan hamlesi. */
+  | { kind: "shared-move"; sharedIndex: number; moveIndex: number }
   | { kind: "reward" };
+
+/** Yedeklerin güncel hâli, `sharedExperience` dizisindeki sırayla. */
+type SharedMembers = Record<number, TeamMember>;
 
 function buildSteps(outcome: VictoryOutcome): Step[] {
   const steps: Step[] = [{ kind: "xp" }];
   if (outcome.evolution !== null) steps.push({ kind: "evolution" });
+  // Yedeklerin evrimi de oyuncuya gösteriliyor; arkada sessizce olmuyor.
+  outcome.sharedExperience.forEach((shared, sharedIndex) => {
+    if (shared.evolution !== null) {
+      steps.push({ kind: "shared-evolution", sharedIndex });
+    }
+  });
   if (outcome.catchTarget !== null) steps.push({ kind: "catch" });
   outcome.pendingMoves.forEach((_, moveIndex) =>
     steps.push({ kind: "move", moveIndex }),
+  );
+  outcome.sharedExperience.forEach((shared, sharedIndex) =>
+    shared.pendingMoves.forEach((_, moveIndex) =>
+      steps.push({ kind: "shared-move", sharedIndex, moveIndex }),
+    ),
   );
   steps.push({ kind: "reward" });
   return steps;
@@ -118,6 +136,7 @@ export function VictorySequence(props: VictorySequenceProps) {
   const [error, setError] = useState<string | null>(null);
   const [stepIndex, setStepIndex] = useState(0);
   const [member, setMember] = useState(props.member);
+  const [sharedMembers, setSharedMembers] = useState<SharedMembers>({});
   const [logs, setLogs] = useState<string[]>([]);
   // A ref, not state: `finish` reads this synchronously in the same handler
   // that sets it, so a state update would still hold the previous value.
@@ -159,6 +178,14 @@ export function VictorySequence(props: VictorySequenceProps) {
       .then((result) => {
         setOutcome(result);
         setMember(result.member);
+        setSharedMembers(
+          Object.fromEntries(
+            result.sharedExperience.map((shared, index) => [
+              index,
+              shared.member,
+            ]),
+          ),
+        );
 
         const entries = [`Gained ${result.xpGained} EXP.`];
         if (result.levelAfter > result.levelBefore) {
@@ -203,18 +230,25 @@ export function VictorySequence(props: VictorySequenceProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function finish(finalMember: TeamMember, extraLogs: string[] = []) {
+  function finish(
+    finalMember: TeamMember,
+    extraLogs: string[] = [],
+    finalShared: SharedMembers = sharedMembers,
+  ) {
     if (finished.current) return;
     finished.current = true;
     props.onDone({
       member: finalMember,
       goldDelta: outcome?.goldDelta ?? 0,
       evolvedPokemon: outcome?.evolution?.to ?? null,
-      sharedMembers: (outcome?.sharedExperience ?? []).map((shared) => ({
-        index: shared.index,
-        member: shared.member,
-        pokemon: shared.pokemon,
-      })),
+      sharedMembers: (outcome?.sharedExperience ?? []).map(
+        (shared, index) => ({
+          index: shared.index,
+          // Savaş sonunda öğretilen hamleler dahil güncel hâli.
+          member: finalShared[index] ?? shared.member,
+          pokemon: shared.pokemon,
+        }),
+      ),
       capturedMember: caughtRef.current
         ? (outcome?.catchTarget?.member ?? null)
         : null,
@@ -231,13 +265,18 @@ export function VictorySequence(props: VictorySequenceProps) {
     });
   }
 
-  function advance(nextMember: TeamMember = member, extraLogs: string[] = []) {
+  function advance(
+    nextMember: TeamMember = member,
+    extraLogs: string[] = [],
+    nextShared: SharedMembers = sharedMembers,
+  ) {
     setMember(nextMember);
+    setSharedMembers(nextShared);
     if (extraLogs.length > 0) setLogs((current) => [...current, ...extraLogs]);
 
     const steps = outcome === null ? [] : buildSteps(outcome);
     if (stepIndex + 1 >= steps.length) {
-      finish(nextMember, extraLogs);
+      finish(nextMember, extraLogs, nextShared);
       return;
     }
     setStepIndex(stepIndex + 1);
@@ -265,6 +304,24 @@ export function VictorySequence(props: VictorySequenceProps) {
 
   const steps = buildSteps(outcome);
   const step = steps[stepIndex];
+  const sharedEvolution =
+    step.kind === "shared-evolution"
+      ? outcome.sharedExperience[step.sharedIndex].evolution
+      : null;
+  // Yedeğin hamle adımı: hangi yedek, hangi hamle, güncel hâli.
+  const benchLearn =
+    step.kind === "shared-move"
+      ? {
+          sharedIndex: step.sharedIndex,
+          move: outcome.sharedExperience[step.sharedIndex].pendingMoves[
+            step.moveIndex
+          ],
+          pokemon: outcome.sharedExperience[step.sharedIndex].pokemon,
+          member:
+            sharedMembers[step.sharedIndex] ??
+            outcome.sharedExperience[step.sharedIndex].member,
+        }
+      : null;
 
   return (
     <Overlay>
@@ -288,6 +345,14 @@ export function VictorySequence(props: VictorySequenceProps) {
             <EvolutionStep
               from={outcome.evolution.from}
               to={outcome.evolution.to}
+              onContinue={() => advance()}
+            />
+          )}
+
+          {sharedEvolution !== null && (
+            <EvolutionStep
+              from={sharedEvolution.from}
+              to={sharedEvolution.to}
               onContinue={() => advance()}
             />
           )}
@@ -334,8 +399,25 @@ export function VictorySequence(props: VictorySequenceProps) {
               move={outcome.pendingMoves[step.moveIndex].move}
               member={member}
               name={getMemberName(member, outcome.pokemon)}
+              pokemon={outcome.pokemon}
               source={outcome.pendingMoves[step.moveIndex].source}
               onResolve={(nextMember, log) => advance(nextMember, [log])}
+            />
+          )}
+
+          {benchLearn !== null && (
+            <MoveLearnPanel
+              move={benchLearn.move}
+              member={benchLearn.member}
+              name={getMemberName(benchLearn.member, benchLearn.pokemon)}
+              pokemon={benchLearn.pokemon}
+              source="level-up"
+              onResolve={(nextBench, log) =>
+                advance(member, [log], {
+                  ...sharedMembers,
+                  [benchLearn.sharedIndex]: nextBench,
+                })
+              }
             />
           )}
 

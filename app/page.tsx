@@ -392,13 +392,28 @@ export default function GamePage() {
         return;
       }
 
+      // "?" olayındaki trainer: sadece veda repliği. Kadrolu trainer değil,
+      // o yüzden iyileştirme ve trainer sayacı yok.
+      if (!wasTrainer && result.trainer !== null) {
+        const source = trainerSourceFromResult(result);
+        if (source !== null) {
+          setOutro({
+            name: source.name,
+            title: source.title,
+            spriteId: source.spriteId,
+            line: source.defeatLine,
+            won: true,
+          });
+        }
+      }
+
       // Elit trainer ve boss relic veriyor; Gym rozet veriyor (relic değil).
       if (nodeType === "ELITE" || wasBoss) store.offerRelics();
       // Act'in doruk noktası geçildi: yeni act, yeni harita.
       if (isCapstone) store.advanceAct();
     } else {
       // --- Yenilgi ---
-      if (wasTrainer) {
+      if (wasTrainer || result.trainer !== null) {
         const source = trainerSourceFromResult(result) ?? findTrainerSource(nodeType, store);
         if (source !== null) {
           setOutro({
@@ -483,6 +498,9 @@ export default function GamePage() {
           inventory={player.inventory}
           onConsumeItem={(itemId) =>
             useGameStore.getState().consumeItem(itemId)
+          }
+          onBenchMemberChange={(index, member) =>
+            useGameStore.getState().updateMemberAt(index, member)
           }
           onStateChange={(nextBattle) =>
             useGameStore.setState({ battle: nextBattle })

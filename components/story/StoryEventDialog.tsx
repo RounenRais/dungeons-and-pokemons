@@ -94,7 +94,7 @@ function describeOutcome(outcome: StoryOutcome): string[] {
   if (outcome.item !== undefined) parts.push("an item");
   if (outcome.relic === true) parts.push("a relic");
   if (outcome.chest !== undefined) parts.push(`${outcome.chest} case`);
-  if (outcome.fight === true) parts.push("a hard battle");
+  if (outcome.fight === true) parts.push("a battle");
   return parts;
 }
 
@@ -110,6 +110,17 @@ function describeCost(choice: StoryChoice): string[] {
     parts.push(`${choice.cost.reputation} reputation`);
   }
   return parts;
+}
+
+/** Seçeneğin savaşa götürüp götürmediği — seçmeden önce gösteriliyor. */
+function describeBattleRisk(choice: StoryChoice): string | null {
+  if (choice.outcome?.fight === true) return "Leads to a battle";
+  if (choice.check === undefined) return null;
+  if (choice.onSuccess?.fight === true) return "Leads to a battle";
+  if (choice.onPartial?.fight === true || choice.onFailure?.fight === true) {
+    return "A failed roll leads to a battle";
+  }
+  return null;
 }
 
 interface RollingState {
@@ -248,6 +259,7 @@ export function StoryEventDialog({
                     context,
                   );
                   const costs = describeCost(choice);
+                  const battleRisk = describeBattleRisk(choice);
                   const modifier =
                     choice.check === undefined
                       ? 0
@@ -273,7 +285,9 @@ export function StoryEventDialog({
 
                       <p className="mt-0.5 text-[12px] text-[#2e222f] opacity-90">
                         {costs.length > 0 && <>Cost: {costs.join(" · ")}</>}
-                        {costs.length > 0 && choice.check !== undefined && " — "}
+                        {costs.length > 0 &&
+                          choice.check !== undefined &&
+                          " — "}
                         {choice.check !== undefined && (
                           <>
                             {choice.check.label} DC {choice.check.dc}
@@ -289,6 +303,14 @@ export function StoryEventDialog({
                           <span className="font-semibold"> — {blocked}</span>
                         )}
                       </p>
+
+                      {/* Savaş sürpriz olmasın: "?" karesinde dövüş ancak
+                          oyuncunun seçimiyle (ya da başarısız zarla) çıkıyor. */}
+                      {battleRisk !== null && (
+                        <p className="mt-0.5 text-[12px] font-semibold text-[#8b2e2e]">
+                          ⚔ {battleRisk}
+                        </p>
+                      )}
                     </button>
                   );
                 })}

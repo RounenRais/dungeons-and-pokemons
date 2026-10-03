@@ -38,7 +38,7 @@ function describeOutcome(outcome: EventOutcome): string[] {
   if (outcome.relic === true) parts.push("a relic");
   if (outcome.item !== undefined) parts.push("an item");
   if (outcome.chest !== undefined) parts.push(`${outcome.chest} case`);
-  if (outcome.fight === true) parts.push("a hard battle");
+  if (outcome.fight === true) parts.push("a battle");
   return parts;
 }
 

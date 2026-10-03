@@ -96,7 +96,11 @@ import {
   stand as standHand,
   type BlackjackHand,
 } from "@/lib/game/blackjack";
-import { healTeamMembers, MAX_TEAM_SIZE } from "@/lib/game/team";
+import {
+  capCaughtMember,
+  healTeamMembers,
+  MAX_TEAM_SIZE,
+} from "@/lib/game/team";
 import { createSeed } from "@/lib/game/rng";
 import type { StoryContext } from "@/lib/story/context";
 import {
@@ -1565,13 +1569,17 @@ export const useGameStore = create<GameState>()(
           let team = state.player.team;
           let box = state.box;
           if (result.caught) {
-            const captured: TeamMember = {
-              ...battle.enemy.member,
-              currentHp: battle.enemy.maxHp,
-              maxHp: battle.enemy.maxHp,
-              status: "none",
-              statusTurns: 0,
-            };
+            // Level 100'ü aşan boss yakalanınca takıma Lv100 olarak giriyor.
+            const captured: TeamMember = capCaughtMember(
+              {
+                ...battle.enemy.member,
+                currentHp: battle.enemy.maxHp,
+                maxHp: battle.enemy.maxHp,
+                status: "none",
+                statusTurns: 0,
+              },
+              battle.enemy.pokemon,
+            );
             const stored = storeCaught(team, box, captured);
             destination = stored.destination;
             team = stored.team;
