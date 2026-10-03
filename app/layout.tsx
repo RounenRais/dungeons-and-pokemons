@@ -6,6 +6,7 @@ import {
   Press_Start_2P,
 } from "next/font/google";
 import "./globals.css";
+import { LEGACY_MIGRATION_SCRIPT } from "./legacyMigration";
 
 /*
  * Typography. Cinzel + EB Garamond read as a 17th-century book — too heavy and
@@ -55,6 +56,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${display.variable} ${body.variable} ${hand.variable} ${pixelFont.variable} h-full antialiased`}
     >
+      <head>
+        {/* Eski Vercel adresinden kimlik/kayıt taşıma. Oyun kodundan önce
+            çalışmalı, o yüzden next/script değil düz inline script. */}
+        <script dangerouslySetInnerHTML={{ __html: LEGACY_MIGRATION_SCRIPT }} />
+      </head>
       <body className="flex min-h-full flex-col">{children}</body>
     </html>
   );
